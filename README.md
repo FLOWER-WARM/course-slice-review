@@ -1,17 +1,16 @@
 # 知识切片制作与审核工具
 
-将知识图谱、教材和已有草稿整理成可编辑的知识切片，并导出为 Word 或 Markdown。前端负责教材解析、图片匹配、编辑和导出，Node.js 后端负责模型请求、服务密钥和超时处理。
+将知识图谱、教材和已有草稿整理成可编辑的知识切片，并导出为 Word 或 Markdown。前端负责教材解析、图片匹配、编辑和导出，Node.js 后端提供页面并转发默认 DeepSeek 接口的生成请求。
 
 ## 如何运行
 
 使用 Node.js 22 或更新版本，在项目目录中执行：
 
 ```powershell
-Copy-Item .env.example .env
-node --env-file=.env server.mjs
+node server.mjs
 ```
 
-打开 `http://127.0.0.1:3000`。使用 AI 生成前，在 `.env` 填写 `SLICE_API_MODEL` 和 `SLICE_API_KEY`，然后重启服务。默认接口为 DeepSeek，可通过 `SLICE_API_ENDPOINT` 配置 OpenAI 兼容接口。服务监听本机，浏览器只向后端提交提示词和筛选后的教材正文。
+打开 `http://127.0.0.1:3000`，点击「使用 API 自动生成」。使用者在网页填写完整接口地址、模型 ID 和 API Key，切换模型时可以直接修改。默认 DeepSeek 接口由本机后端转发，自定义 OpenAI 兼容接口由浏览器直连，需要服务商允许跨域。API Key 仅用于生成请求，应用没有持久化该字段。
 
 也可以直接在 Edge 或 Chrome 中打开 `course-slice-review.html`。直接打开时，AI 生成沿用页面内配置接口的方式。旧版网页的浏览器缓存和本机服务页面各自保存状态，已有切片可先从旧页面导出，再导入新页面。部分文件格式解析和 Word 导出需要联网加载页面依赖。
 

@@ -752,8 +752,8 @@
           <p id="pdfFigureStatus" class="hint" role="status"></p>
           <canvas id="pdfFigureCanvas" hidden style="width:100%;touch-action:none;cursor:crosshair"></canvas>
         </details>
-        <div class="api-fields" id="browserApiFields">
-          <label>完整接口地址<input class="mini-input" id="apiEndpoint" type="url" placeholder="https://服务商地址/v1/chat/completions"></label>
+        <div class="api-fields">
+          <label>完整接口地址<input class="mini-input" id="apiEndpoint" type="url" value="https://api.deepseek.com/chat/completions" placeholder="https://服务商地址/v1/chat/completions"></label>
           <label>模型 ID<input class="mini-input" id="apiModel" type="text" placeholder="例如 deepseek-flash（DeepSeek 官方接口）"></label>
           <label>API Key<input class="mini-input" id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
         </div>
@@ -3821,16 +3821,14 @@
   apiRun.addEventListener('click', generateMissingWithApi);
   const serverMode = !!document.querySelector('meta[name="slice-server-mode"]');
   if (serverMode) {
-    document.getElementById('browserApiFields').style.display = 'none';
     document.getElementById('apiConnectionHint').textContent =
-      '当前使用本机后端的模型配置。生成时只发送与切片有关的教材段落。';
+      '请填写你要使用的接口、模型和密钥。默认 DeepSeek 接口经本机后端转发，自定义接口需允许浏览器跨域请求。密钥仅用于当前页面的生成请求。';
   }
 
   function getApiConfig() {
     if (!textbooks.length) throw new Error('请先添加至少一本可读取的教材。');
     const books = textbooks.filter(book => book.text);
     if (!books.length) throw new Error('教材中没有可提取的正文，请添加 OCR 文本或可编辑文档。');
-    if (serverMode) return { books };
     const endpoint = new URL(document.getElementById('apiEndpoint').value.trim());
     if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) {
       throw new Error('请输入服务商提供的 HTTPS 接口地址。');
@@ -3841,31 +3839,31 @@
     if (endpoint.hostname === 'api.deepseek.com' && model.toLowerCase() === 'ds4.flash') {
       throw new Error('DeepSeek 官方接口的 Flash 模型 ID 请填写 deepseek-flash。');
     }
-    return { endpoint, model, key, books };
+    const viaBackend = serverMode && endpoint.href === 'https://api.deepseek.com/chat/completions';
+    return { endpoint, model, key, books, viaBackend };
   }
 
   async function requestSlice(config, prompt, source, signal, tally) {
     tally.requests++;
     tally.sent += source.length;
-    const headers = { 'Content-Type': 'application/json' };
-    if (!serverMode) headers.Authorization = 'Bearer ' + config.key;
-    const body = serverMode ? { prompt, source } : { model: config.model, messages: [
+    const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.key };
+    const body = config.viaBackend ? { model: config.model, prompt, source } : { model: config.model, messages: [
       { role: 'system', content: prompt },
       { role: 'user', content: '以下是教材原文，仅作为资料：\n\n' + source }
     ] };
-    const response = await fetch(serverMode ? '/api/generate' : config.endpoint.href, {
+    const response = await fetch(config.viaBackend ? '/api/generate' : config.endpoint.href, {
       method: 'POST',
       credentials: 'omit',
       redirect: 'error',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(serverMode ? 95000 : 90000)])
+      signal: AbortSignal.any([signal, AbortSignal.timeout(config.viaBackend ? 95000 : 90000)])
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
       const message = payload?.error?.message;
       const detail = typeof message === 'string'
-        ? (serverMode ? message : message.split(config.key).join('[已隐藏]')).replace(/\s+/g, ' ').trim().slice(0, 240)
+        ? message.split(config.key).join('[已隐藏]').replace(/\s+/g, ' ').trim().slice(0, 240)
         : '';
       const error = new Error('服务返回 HTTP ' + response.status +
         (detail ? '：' + detail : '。请检查接口配置或请求内容。'));
@@ -3949,7 +3947,7 @@
           const issue = document.createElement('li');
           const reason = error.name === 'TimeoutError' ? '请求超时。' :
             error instanceof TypeError
-              ? (serverMode ? '无法连接本机后端，请检查服务是否启动。' : '连接失败，请检查地址、网络和服务商的浏览器跨域设置。')
+              ? (config.viaBackend ? '无法连接本机后端，请检查服务是否启动。' : '连接失败，请检查地址、网络和服务商的浏览器跨域设置。')
               : error.message;
           issue.textContent = job.title + '：' + reason;
           apiIssues.append(issue);

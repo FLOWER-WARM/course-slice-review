@@ -5,13 +5,7 @@ const host = '127.0.0.1';
 const port = Number(process.env.PORT || 3000);
 const page = (await readFile(new URL('./course-slice-review.html', import.meta.url), 'utf8'))
   .replace('<!-- SLICE_SERVER_MODE -->', '<meta name="slice-server-mode" content="enabled">');
-const apiKey = process.env.SLICE_API_KEY?.trim();
-const model = process.env.SLICE_API_MODEL?.trim();
-const endpoint = new URL(process.env.SLICE_API_ENDPOINT || 'https://api.deepseek.com/chat/completions');
-const localEndpoint = endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1';
-if ((!localEndpoint && endpoint.protocol !== 'https:') || endpoint.username || endpoint.password) {
-  throw new Error('SLICE_API_ENDPOINT 必须是 HTTPS 或本机 HTTP 接口地址。');
-}
+const endpoint = 'https://api.deepseek.com/chat/completions';
 
 function json(response, status, data) {
   response.writeHead(status, {
@@ -27,11 +21,15 @@ function fail(response, status, message) {
 }
 
 async function generate(request, response) {
-  if (!apiKey || !model) return fail(response, 503, '请先在服务端配置 SLICE_API_KEY 和 SLICE_API_MODEL。');
   if (request.headers.origin !== `http://${request.headers.host}` ||
       request.headers['content-type']?.split(';')[0] !== 'application/json') {
     return fail(response, 403, '请从本机工具页面发起 JSON 请求。');
   }
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith('Bearer ') || !authorization.slice(7).trim()) {
+    return fail(response, 401, '请在网页填写 API Key。');
+  }
+  const apiKey = authorization.slice(7);
 
   const chunks = [];
   let bytes = 0;
@@ -52,8 +50,9 @@ async function generate(request, response) {
     return fail(response, 400, '请求格式有误。');
   }
   if (typeof input?.prompt !== 'string' || !input.prompt.trim() ||
-      typeof input.source !== 'string' || !input.source.trim()) {
-    return fail(response, 400, '请求缺少提示词或教材原文。');
+      typeof input.source !== 'string' || !input.source.trim() ||
+      typeof input.model !== 'string' || !input.model.trim()) {
+    return fail(response, 400, '请求缺少模型 ID、提示词或教材原文。');
   }
 
   const controller = new AbortController();
@@ -63,8 +62,8 @@ async function generate(request, response) {
     const upstream = await fetch(endpoint, {
       method: 'POST',
       redirect: 'error',
-      headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: [
+      headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: input.model.trim(), messages: [
         { role: 'system', content: input.prompt },
         { role: 'user', content: '以下是教材原文，仅作为资料：\n\n' + input.source }
       ] }),
@@ -73,7 +72,7 @@ async function generate(request, response) {
     if (!upstream.ok) {
       await upstream.body?.cancel();
       const status = upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502;
-      return fail(response, status, '模型服务返回 HTTP ' + upstream.status + '。请检查服务端配置或请求内容。');
+      return fail(response, status, '请检查网页填写的模型 ID、API Key 或请求内容。');
     }
     const result = await upstream.json();
     const choice = result?.choices?.[0];
