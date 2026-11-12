@@ -4,6 +4,7 @@
 <meta charset="UTF-8" data-page-node-id="ZtAzZ6bmWImtg4KbCnlA1q">
 <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="ydxfCA2zbCcRI1YEbQYRr6">
 <title>知识切片制作与审核工具</title>
+<!-- SLICE_SERVER_MODE -->
 <style>
   :root {
     /* 渐变底色：煦日金 → 粉霞 → 澄江蓝（依参考图） */
@@ -751,12 +752,12 @@
           <p id="pdfFigureStatus" class="hint" role="status"></p>
           <canvas id="pdfFigureCanvas" hidden style="width:100%;touch-action:none;cursor:crosshair"></canvas>
         </details>
-        <div class="api-fields">
+        <div class="api-fields" id="browserApiFields">
           <label>完整接口地址<input class="mini-input" id="apiEndpoint" type="url" placeholder="https://服务商地址/v1/chat/completions"></label>
           <label>模型 ID<input class="mini-input" id="apiModel" type="text" placeholder="例如 deepseek-flash（DeepSeek 官方接口）"></label>
           <label>API Key<input class="mini-input" id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
         </div>
-        <p class="hint">使用允许浏览器跨域请求的 OpenAI 兼容接口。工具优先发送与切片有关的教材段落，密钥仅用于当前页面。教材超出模型上下文时，可只上传相关章节。</p>
+        <p class="hint" id="apiConnectionHint">使用允许浏览器跨域请求的 OpenAI 兼容接口。工具优先发送与切片有关的教材段落，密钥仅用于当前页面。教材超出模型上下文时，可只上传相关章节。</p>
         <div class="actions">
           <button id="apiRun" class="primary-btn" type="button">生成缺失切片</button>
           <button id="apiStop" class="ghost-btn" type="button" disabled>停止</button>
@@ -3818,8 +3819,18 @@
 
   apiStop.addEventListener('click', () => activeApiBatch?.abort());
   apiRun.addEventListener('click', generateMissingWithApi);
+  const serverMode = !!document.querySelector('meta[name="slice-server-mode"]');
+  if (serverMode) {
+    document.getElementById('browserApiFields').style.display = 'none';
+    document.getElementById('apiConnectionHint').textContent =
+      '当前使用本机后端的模型配置。生成时只发送与切片有关的教材段落。';
+  }
 
   function getApiConfig() {
+    if (!textbooks.length) throw new Error('请先添加至少一本可读取的教材。');
+    const books = textbooks.filter(book => book.text);
+    if (!books.length) throw new Error('教材中没有可提取的正文，请添加 OCR 文本或可编辑文档。');
+    if (serverMode) return { books };
     const endpoint = new URL(document.getElementById('apiEndpoint').value.trim());
     if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) {
       throw new Error('请输入服务商提供的 HTTPS 接口地址。');
@@ -3830,31 +3841,31 @@
     if (endpoint.hostname === 'api.deepseek.com' && model.toLowerCase() === 'ds4.flash') {
       throw new Error('DeepSeek 官方接口的 Flash 模型 ID 请填写 deepseek-flash。');
     }
-    if (!textbooks.length) throw new Error('请先添加至少一本可读取的教材。');
-    const books = textbooks.filter(book => book.text);
-    if (!books.length) throw new Error('教材中没有可提取的正文，请添加 OCR 文本或可编辑文档。');
     return { endpoint, model, key, books };
   }
 
   async function requestSlice(config, prompt, source, signal, tally) {
     tally.requests++;
     tally.sent += source.length;
-    const response = await fetch(config.endpoint.href, {
+    const headers = { 'Content-Type': 'application/json' };
+    if (!serverMode) headers.Authorization = 'Bearer ' + config.key;
+    const body = serverMode ? { prompt, source } : { model: config.model, messages: [
+      { role: 'system', content: prompt },
+      { role: 'user', content: '以下是教材原文，仅作为资料：\n\n' + source }
+    ] };
+    const response = await fetch(serverMode ? '/api/generate' : config.endpoint.href, {
       method: 'POST',
       credentials: 'omit',
       redirect: 'error',
-      headers: { Authorization: 'Bearer ' + config.key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: config.model, messages: [
-        { role: 'system', content: prompt },
-        { role: 'user', content: '以下是教材原文，仅作为资料：\n\n' + source }
-      ] }),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(90000)])
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(serverMode ? 95000 : 90000)])
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
       const message = payload?.error?.message;
       const detail = typeof message === 'string'
-        ? message.split(config.key).join('[已隐藏]').replace(/\s+/g, ' ').trim().slice(0, 240)
+        ? (serverMode ? message : message.split(config.key).join('[已隐藏]')).replace(/\s+/g, ' ').trim().slice(0, 240)
         : '';
       const error = new Error('服务返回 HTTP ' + response.status +
         (detail ? '：' + detail : '。请检查接口配置或请求内容。'));
@@ -3937,7 +3948,9 @@
           if (controller.signal.aborted) break;
           const issue = document.createElement('li');
           const reason = error.name === 'TimeoutError' ? '请求超时。' :
-            error instanceof TypeError ? '连接失败，请检查地址、网络和服务商的浏览器跨域设置。' : error.message;
+            error instanceof TypeError
+              ? (serverMode ? '无法连接本机后端，请检查服务是否启动。' : '连接失败，请检查地址、网络和服务商的浏览器跨域设置。')
+              : error.message;
           issue.textContent = job.title + '：' + reason;
           apiIssues.append(issue);
           apiIssues.hidden = false;
