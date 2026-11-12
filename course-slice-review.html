@@ -3466,7 +3466,8 @@
           if (!book.text && !book.pdfFile) throw new Error('文件没有可用正文。');
           book.name = file.name;
           book.id = 'T' + textbookSession + 'B' + (++textbookSequence);
-          book.chunks = splitTextbook(book.text);
+          book.searchText = book.text.split('\n').filter(line => !isContentsEntry(line)).join('\n');
+          book.chunks = splitTextbook(book.searchText);
           textbooks.push(book);
           if (book.figureReadErrors) issues.push(file.name + '：' + book.figureReadErrors + ' 页图像读取失败，可使用框选补图。');
         } catch (error) {
@@ -3664,14 +3665,82 @@
     return chunks;
   }
 
+  function isContentsEntry(line) {
+    return /(?:[…⋯．.·•]\s*){3,}[0-9０-９]+\s*$/u.test(line);
+  }
+
+  function textbookHeadingKey(line) {
+    return normalizeKey(line.trim().replace(/^#{1,6}\s*/, '').replace(
+      /^(?:第\s*[一二三四五六七八九十百0-9０-９\s]+[篇章节]|[（(]\s*[一二三四五六七八九十百0-9０-９]+\s*[）)]|[一二三四五六七八九十百0-9０-９]+\s*[、.．])\s*/u, ''
+    ));
+  }
+
+  function textbookHeadingLevel(line) {
+    const markdown = line.match(/^(#{1,6})\s+/);
+    if (markdown) return markdown[1].length;
+    const division = line.match(/^第\s*[一二三四五六七八九十百0-9０-９\s]+([篇章节])/u);
+    if (division) return '篇章节'.indexOf(division[1]) + 1;
+    if (/^[一二三四五六七八九十百]+\s*[、.．]/u.test(line)) return 4;
+    if (/^[（(]\s*[一二三四五六七八九十百]+\s*[）)]/u.test(line)) return 5;
+    if (/^\d+\s*[、.．]\s*\D/u.test(line)) return 6;
+    return 7;
+  }
+
+  function findTextbookSection(books, title, ancestors) {
+    if (title.length < 2) return null;
+    const matches = [];
+    for (const book of books) {
+      const lines = book.searchText.split('\n');
+      const parents = [];
+      for (const [index, raw] of lines.entries()) {
+        const line = raw.trim();
+        const level = textbookHeadingLevel(line);
+        const key = line.length <= 100 ? textbookHeadingKey(line) : '';
+        if (level < 7) parents.length = level - 1;
+        if (key === title) {
+          const section = [line];
+          let length = line.length;
+          for (const next of lines.slice(index + 1)) {
+            const nextLevel = textbookHeadingLevel(next.trim());
+            if (nextLevel < 7 && nextLevel <= level) break;
+            if (length + next.length + 1 > 6800) break;
+            section.push(next);
+            length += next.length + 1;
+          }
+          if (section.slice(1).join('').trim().length >= 40) {
+            const score = ancestors.filter(term => parents.includes(term)).length;
+            matches.push({ book, text: section.join('\n').trim(), score });
+          }
+        }
+        if (level < 7) parents[level - 1] = key;
+      }
+    }
+    matches.sort((a, b) => b.score - a.score);
+    return matches.length === 1 || matches[0]?.score > matches[1]?.score ? matches[0] : null;
+  }
+
+  function formatSliceMaterials(sections) {
+    const numbersByBook = new Map();
+    const source = sections.map(({ book, text }) => {
+      const numbers = new Set(Array.from(text.matchAll(new RegExp(figureNumberPattern.source, 'giu')),
+        match => figureNumber(match[0])));
+      numbersByBook.set(book.id, numbers);
+      return '【教材：' + book.name + '】\n' + text;
+    }).join('\n\n');
+    const figures = allTextbookFigures().filter(figure => numbersByBook.get(figure.id.split('-')[0])?.has(figure.number));
+    return { source, figures };
+  }
+
   function selectSliceMaterials(books, slice) {
-    const terms = [slice.title, ...(slice.kp || '').split('/').reverse()]
-      .map(value => normalizeKey(value).replace(/^(?:第[一二三四五六七八九十0-9]+[章节]|[一二三四五六七八九十]+|\d+)/u, ''))
-      .filter(value => value.length >= 2);
-    const title = terms[0] || '';
+    const title = textbookHeadingKey(slice.title);
+    const ancestors = (slice.kp || '').split('/').reverse().map(textbookHeadingKey)
+      .filter(key => key.length >= 2 && key !== title);
+    const section = findTextbookSection(books, title, ancestors);
+    if (section) return formatSliceMaterials([section]);
+    const terms = [title, ...ancestors];
     const pairs = title.length > 2 ? [...new Set(Array.from({ length: title.length - 1 }, (_, i) => title.slice(i, i + 2)))] : [];
     const ranked = books.flatMap(book => book.chunks.map((chunk, index) => ({
-      book, index, score: terms.reduce((score, term, i) => score + (chunk.key.includes(term) ? (i ? 4 : 20) : 0), 0)
+      book, index, score: terms.reduce((score, term, i) => score + (term.length >= 2 && chunk.key.includes(term) ? (i ? 4 : 20) : 0), 0)
         + pairs.filter(pair => chunk.key.includes(pair)).length
     }))).sort((a, b) => b.score - a.score);
     if (!ranked.length) throw new Error('教材没有可供检索的原文。');
@@ -3689,16 +3758,9 @@
         if (book.chunks[index + offset]) selected.get(book).add(index + offset);
       }
     }
-    const numbers = new Set();
-    const source = [...selected].map(([book, indexes]) => {
-      const text = [...indexes].sort((a, b) => a - b).map(i => book.chunks[i].text).join('\n\n');
-      for (const match of text.matchAll(new RegExp(figureNumberPattern.source, 'giu'))) numbers.add(figureNumber(match[0]));
-      return '【教材：' + book.name + '】\n' + text;
-    }).join('\n\n');
-    const selectedNames = new Set([...selected.keys()].map(book => book.id));
-    const figures = allTextbookFigures().filter(figure =>
-      (selectedNames.has(figure.id.split('-')[0]) && numbers.has(figure.number)) || (figure.page && numbers.has(figure.number)));
-    return { source, figures };
+    return formatSliceMaterials([...selected].map(([book, indexes]) => ({
+      book, text: [...indexes].sort((a, b) => a - b).map(i => book.chunks[i].text).join('\n\n')
+    })));
   }
 
   const pdfCanvas = document.getElementById('pdfFigureCanvas');
@@ -3897,7 +3959,7 @@
     const content = document.createElement('template');
     content.innerHTML = block.parts.join('');
     if (/^教材本节未涉及[。！!]?\s*$/.test(content.content.textContent.trim())) {
-      throw new Error('所选教材段落未覆盖该切片。请补传相关章节后重试。');
+      throw new Error('模型判断所选段落未覆盖该切片。可添加对应正文页后重试。');
     }
     return block;
   }
