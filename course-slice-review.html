@@ -3359,6 +3359,28 @@
       proposals.filter(other => other.box === proposal.box || other.caption.number === proposal.caption.number).length === 1);
   }
 
+  async function renderPdfFigureRegion(page, region, referenceScale) {
+    const widthPt = region.width / referenceScale;
+    const heightPt = region.height / referenceScale;
+    const scale = Math.min(300 / 72, 2400 / Math.max(widthPt, heightPt));
+    const ratio = scale / referenceScale;
+    const left = Math.floor(region.x * ratio);
+    const top = Math.floor(region.y * ratio);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil((region.x + region.width) * ratio) - left;
+    canvas.height = Math.ceil((region.y + region.height) * ratio) - top;
+    try {
+      await page.render({
+        canvasContext: canvas.getContext('2d'),
+        viewport: page.getViewport({ scale }),
+        transform: [1, 0, 0, 1, -left, -top]
+      }).promise;
+      return { src: canvas.toDataURL('image/png'), widthPt };
+    } finally {
+      canvas.width = canvas.height = 0;
+    }
+  }
+
   async function extractPdfFigures(page, items, ops, pageNumber) {
     const base = page.getViewport({ scale: 1 });
     const viewport = page.getViewport({ scale: Math.min(1.75, 1500 / Math.max(base.width, base.height)) });
@@ -3366,18 +3388,12 @@
     if (!captions.length) return [];
     const operators = await page.getOperatorList();
     const pairs = matchPdfCaptions(captions, pdfImageBounds(operators, ops, viewport));
-    if (!pairs.length) return [];
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    return pairs.map(({ caption, box }) => {
-      const crop = document.createElement('canvas');
-      crop.width = box.width;
-      crop.height = box.height;
-      crop.getContext('2d').drawImage(canvas, box.x, box.y, box.width, box.height, 0, 0, box.width, box.height);
-      return { number: caption.number, caption: caption.caption, page: pageNumber, src: crop.toDataURL('image/png') };
-    });
+    const figures = [];
+    for (const { caption, box } of pairs) {
+      const image = await renderPdfFigureRegion(page, box, viewport.scale);
+      figures.push({ number: caption.number, caption: caption.caption, page: pageNumber, ...image });
+    }
+    return figures;
   }
 
   async function readTextbook(file) {
@@ -3541,6 +3557,10 @@
     image.src = figure.src;
     image.alt = figure.caption;
     image.style.maxWidth = '100%';
+    if (figure.widthPt) {
+      image.style.width = Math.min(420, Math.round(figure.widthPt)) + 'pt';
+      image.style.height = 'auto';
+    }
     paragraph.replaceChildren(image);
     const next = paragraph.nextElementSibling;
     if (next?.textContent.trim().startsWith('【图片标题】')) {
@@ -3561,7 +3581,20 @@
       const text = caption.textContent.trim();
       const number = text.startsWith('【图片标题】') && figureNumber(text);
       const previous = caption.previousElementSibling;
-      if (!number || previous?.querySelector('img') || figureReference(previous?.textContent.trim() || '')) return;
+      if (!number) return;
+      const existingImage = previous?.querySelector('img');
+      if (existingImage) {
+        const candidates = findFigureCandidates({ number }, allTextbookFigures());
+        const figure = candidates[0];
+        // Older PDF inserts used only max-width and the original caption as alt text.
+        if (candidates.length === 1 && figure.widthPt && existingImage.alt === figure.caption &&
+            !existingImage.style.width && existingImage.style.maxWidth === '100%') {
+          putFigure(previous, figure);
+          changed = true;
+        }
+        return;
+      }
+      if (figureReference(previous?.textContent.trim() || '')) return;
       const placeholder = document.createElement('p');
       placeholder.textContent = '（图' + number + '）';
       caption.before(placeholder);
@@ -3819,7 +3852,7 @@
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      displayedPdf = { book, page, canvas };
+      displayedPdf = { book, page, canvas, scale: viewport.scale };
       pdfCanvas.width = canvas.width;
       pdfCanvas.height = canvas.height;
       pdfCanvas.hidden = false;
@@ -3858,9 +3891,10 @@
     cropSave.disabled = true;
     redrawPdfSelection();
   });
-  cropSave.addEventListener('click', () => {
+  cropSave.addEventListener('click', async () => {
     if (!displayedPdf || !selection || activeApiBatch || readingTextbooks) return;
-    const { book, page, canvas } = displayedPdf;
+    const preview = displayedPdf;
+    const { book, page, scale } = preview;
     if (!textbooks.includes(book) || cropBook.value !== book.id || Number(cropPage.value) !== page) {
       cropStatus.textContent = '教材或页码已变更，请重新预览后框选。';
       return;
@@ -3868,16 +3902,30 @@
     const caption = document.getElementById('pdfFigureLabel').value.trim();
     const number = figureNumber(caption);
     if (!number) { cropStatus.textContent = '请填写教材图号，例如「图2-8 骨迷路」。'; return; }
-    const image = document.createElement('canvas');
-    const { x, y, width, height } = selection;
-    image.width = width;
-    image.height = height;
-    image.getContext('2d').drawImage(canvas, x, y, width, height, 0, 0, width, height);
-    book.figures.push({ number, caption, page, src: image.toDataURL('image/png') });
+    const region = selection;
     cropSave.disabled = true;
-    cropStatus.textContent = '已保存「' + caption + '」。可在切片页点击「匹配教材原图」。';
-    renderTextbooks();
-    renderFigureReview();
+    pageButton.disabled = true;
+    pdfCanvas.style.pointerEvents = 'none';
+    cropStatus.textContent = '正在从 PDF 原页生成高清插图…';
+    let task;
+    try {
+      const pdfjs = await loadPdfLibrary();
+      task = pdfjs.getDocument({ data: await book.pdfFile.arrayBuffer(), isEvalSupported: false });
+      const pdf = await task.promise;
+      const image = await renderPdfFigureRegion(await pdf.getPage(page), region, scale);
+      if (!textbooks.includes(book)) return;
+      book.figures.push({ number, caption, page, ...image });
+      cropStatus.textContent = '已保存高清插图「' + caption + '」。可在切片页点击「匹配教材原图」。';
+      renderTextbooks();
+      renderFigureReview();
+    } catch (error) {
+      cropStatus.textContent = error.message || '高清插图生成失败。';
+      cropSave.disabled = displayedPdf !== preview || selection !== region;
+    } finally {
+      if (task) await task.destroy().catch(() => {});
+      pageButton.disabled = false;
+      pdfCanvas.style.pointerEvents = '';
+    }
   });
 
   apiStop.addEventListener('click', () => activeApiBatch?.abort());
