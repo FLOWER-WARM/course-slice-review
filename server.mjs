@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { exportWord } from './word-export.mjs';
 
 const host = '127.0.0.1';
 const port = Number(process.env.PORT || 3000);
@@ -106,6 +107,16 @@ createServer(async (request, response) => {
       return await generate(request, response);
     } catch {
       if (!response.destroyed && !response.headersSent) fail(response, 500, '生成请求处理失败。');
+      return;
+    }
+  }
+  if (request.method === 'POST' && path === '/api/export-word') {
+    try {
+      return await exportWord(request, response);
+    } catch {
+      if (!response.destroyed && !response.headersSent) {
+        fail(response, 500, 'Word 导出失败。请确认已运行 npm ci，再检查公式后重试。');
+      }
       return;
     }
   }

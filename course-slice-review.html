@@ -795,7 +795,7 @@
         <h3 data-page-node-id="exportH3">导出</h3>
         <p class="hint" id="exportMeta" style="margin-top:0" data-page-node-id="exportMeta"></p>
         <ul class="clean" data-page-node-id="exportRuleList">
-          <li data-page-node-id="exportRuleWord"><b>Word（.docx）</b>：按《知识片段模版》的六字段结构输出（标题 1 + 格式 / 分类 / 知识点 / 来源 / 内容 五个标题 2），代码正文为 <b>SourceCode 段落样式</b>、缩进保留；公式以 LaTeX 文本落位（行内 <code>$…$</code>、独立 <code>$$…$$</code>），导出后在 Word / WPS 用「插入公式」（LaTeX 输入模式）重建为真公式；<b>表格为真表格</b>——AI 按常规输出表格即可，导入时自动识别并还原为真表格，导出 Word 即带边框，不会出现 | 分隔的纯文本。</li>
+          <li data-page-node-id="exportRuleWord"><b>Word（.docx）</b>：按《知识片段模版》的六字段结构输出，保留图片、表格和代码。通过本机服务导出时，行内 <code>$…$</code> 和独立 <code>$$…$$</code> 公式自动转成 Word 可编辑的专业公式。</li>
           <li data-page-node-id="exportRuleMd"><b>Markdown（.md）</b>：每个切片输出 <code># 完整切片标题</code> + 内容正文，末尾空行分隔；图片以 data URI 内嵌（文件会较大），公式按 LaTeX 原样保留（行内 <code>$…$</code>、独立 <code>$$…$$</code>），表格转成 Markdown 表格，代码保留语言围栏。该格式可被本工具的「批量导入内容」再次读取（勾选项开启「含字段」后会多出四行字段信息）。</li>
           <li data-page-node-id="exportRuleName">导出文件名取自右侧页面「导出文件名」输入框，留空则为「切片」；全部切片导出为一个文件，Word 版每片之间分页。</li>
         </ul>
@@ -1593,13 +1593,13 @@
     return d.innerHTML;
   }
 
-  function sliceWordHtml(s) {
+  function sliceWordHtml(s, content = wordCodeParagraphs(s.content || '<p></p>')) {
     return '<h1>' + esc(s.title) + '</h1>' +
       '<h2>格式</h2><p>' + esc(s.fmt) + '</p>' +
       '<h2>分类</h2><p>' + esc(s.cat) + '</p>' +
       '<h2>知识点</h2><p>' + esc(s.kp) + '</p>' +
       '<h2>来源</h2><p>' + esc(s.src) + '</p>' +
-      '<h2>内容</h2>' + wordCodeParagraphs(s.content || '<p></p>') + '<p style="page-break-before:always"></p>';
+      '<h2>内容</h2>' + content;
   }
 
   function wordShell(body) {
@@ -1621,7 +1621,6 @@
       'pre{font-family:Cambria,"Cambria Math",serif;font-size:11pt;white-space:pre-wrap;word-break:break-word;}' +
       'code{font-family:Consolas,"Courier New",monospace;font-size:10.5pt;}' +
       '.cap-line{color:#555555;}' +
-      // 公式：正文里就是 LaTeX 文本（$…$ / $$…$$），用正文字体呈现，导出后可直接用「插入公式」按 LaTeX 重建
       '.formula-ph{font-family:Cambria,"Cambria Math",serif;}' +
       '.img-broken{color:#c47f17;}' +
       '</style></head><body>' + body + '</body></html>';
@@ -1686,23 +1685,120 @@
     return 'doc';
   }
 
-  async function exportOne(i) {
-    const s = slices[i];
-    const kind = await exportBlob(wordShell(sliceWordHtml(s)), s.title);
-    setHint('已导出单切片 Word（.' + kind + '）' + (kind === 'doc' ? '，Word/WPS 可直接打开，另存为 docx 即可。' : '。'));
+  function prepareWordContent(html) {
+    const container = document.createElement('template');
+    container.innerHTML = wordCodeParagraphs(html || '<p></p>');
+    container.content.querySelectorAll('.formula-ph').forEach(span => {
+      const legacy = span.textContent.trim().match(/^【公式[：:]([\s\S]+)】$/);
+      if (legacy) span.textContent = '$' + legacy[1].trim() + '$';
+      // Formulas pasted into the editor can contain formatting spans and line breaks.
+      else {
+        span.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+        span.textContent = span.textContent;
+      }
+    });
+    let count = 0;
+    const nodes = document.createTreeWalker(container.content, NodeFilter.SHOW_TEXT);
+    while (nodes.nextNode()) {
+      const node = nodes.currentNode;
+      if (node.parentElement?.closest('pre, code, .SourceCode, script, style')) continue;
+      node.nodeValue = node.nodeValue.replace(
+        /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<![\\$])\$(?!\$)((?:\\.|[^$\\\r\n])+)(?<!\\)\$(?!\$)|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g,
+        (original, display, inline, bracket, paren) => {
+          const tex = (display ?? inline ?? bracket ?? paren).trim();
+          if (!tex) return original;
+          count++;
+          return display != null || bracket != null ? '\\[' + tex + '\\]' : '\\(' + tex + '\\)';
+        }
+      );
+    }
+    container.content.querySelectorAll('p.SourceCode').forEach(paragraph => {
+      const block = document.createElement('div');
+      block.setAttribute('custom-style', 'Source Code');
+      const code = document.createElement('code');
+      code.textContent = paragraph.textContent;
+      paragraph.replaceChildren(code);
+      paragraph.replaceWith(block);
+      block.append(paragraph);
+    });
+    return { html: container.innerHTML, count };
   }
 
-  async function exportAll({ confirmFormulas = true } = {}) {
+  let wordExportInProgress = false;
+  async function formatNativeWord(zip, xml) {
+    const layout = '<w:pgSz w:w="11906" w:h="16838"/>' +
+      '<w:pgMar w:top="1701" w:right="1417" w:bottom="1417" w:left="1701" w:header="720" w:footer="720" w:gutter="0"/>';
+    const borders = '<w:tblBorders>' +
+      ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(side =>
+        '<w:' + side + ' w:val="single" w:sz="4" w:color="000000"/>').join('') + '</w:tblBorders>';
+    const formatted = xml.replace(/<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>/g, section =>
+      section.replace(/<w:pg(?:Sz|Mar)\b[^>]*\/>/g, '').replace('</w:sectPr>', layout + '</w:sectPr>'));
+    zip.file('word/document.xml', formatted.replace(/<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>/g, properties =>
+      properties.includes('<w:tblBorders') ? properties :
+        properties.replace(/<w:(?:shd|tblLayout|tblCellMar|tblLook)\b|<\/w:tblPr>/, tag => borders + tag)));
+    const stylesPath = 'word/styles.xml';
+    const styles = await zip.file(stylesPath).async('string');
+    const codeStyle = SOURCECODE_STYLE_XML.match(/<w:style\b[\s\S]*?<\/w:style>/)[0];
+    zip.file(stylesPath, styles.replace(/<w:style\b[^>]*w:styleId="SourceCode"[^>]*>[\s\S]*?<\/w:style>/, codeStyle));
+    return zip.generateAsync({
+      type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      compression: 'DEFLATE'
+    });
+  }
+
+  async function exportWordSlices(selected, nameSuffix) {
+    if (wordExportInProgress) return;
+    const prepared = selected.map(slice => prepareWordContent(slice.content));
+    const formulaCount = prepared.reduce((sum, item) => sum + item.count, 0);
+    if (!formulaCount || !serverMode) {
+      if (formulaCount && !confirm('当前直接打开了 HTML。通过本机服务导出可生成 Word 专业公式。是否继续导出 LaTeX 文本版？')) return;
+      const body = selected.map(slice => sliceWordHtml(slice)).join('<p style="page-break-before:always"></p>');
+      const kind = await exportBlob(wordShell(body), nameSuffix);
+      setHint('已导出 Word（.' + kind + '）。');
+      return;
+    }
+
+    wordExportInProgress = true;
+    setHint('正在导出 Word 专业公式…');
+    try {
+      const body = selected.map((slice, i) => sliceWordHtml(slice, prepared[i].html))
+        .join('<div class="slice-word-page-break"><p>分页</p></div>');
+      const response = await fetch('/api/export-word', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        body
+      });
+      if (!response.ok) {
+        if (response.status === 413) throw new Error('文档内容过大，请分批导出。');
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error?.message || 'Word 导出失败，请稍后重试。');
+      }
+      const blob = await response.blob();
+      const zip = await JSZip.loadAsync(blob);
+      const xml = await zip.file('word/document.xml').async('string');
+      const converted = (xml.match(/<m:oMath(?:\s|>)/g) || []).length;
+      const base = safeName(document.getElementById('fileNameInput').value.trim() || '切片');
+      download(await formatNativeWord(zip, xml), base + (nameSuffix ? '-' + safeName(nameSuffix) : '') + '.docx');
+      const remaining = Math.max(0, formulaCount - converted);
+      setHint('已导出 Word，包含 ' + converted + ' 处可编辑公式。' +
+        (remaining ? ' 有 ' + remaining + ' 处未能转换，已保留公式文本，请检查 LaTeX 写法。' : ''), remaining > 0);
+    } catch (error) {
+      setHint(error.message || 'Word 导出失败。', true);
+    } finally {
+      wordExportInProgress = false;
+    }
+  }
+
+  async function exportOne(i) {
+    const slice = slices[i];
+    await exportWordSlices([slice], slice.title);
+  }
+
+  async function exportAll() {
     if (!slices.length) return;
     const empty = slices.filter(slice => !hasSliceContent(slice)).length;
     if (empty && !confirm('还有 ' + empty + ' 个切片「内容」为空，仍要导出全部吗？')) return;
-    const phCount = slices.filter(s => s.content && (s.content.indexOf('formula-ph') >= 0 || /\$\$?[^$]+\$\$?/.test(s.content))).length;
-    if (confirmFormulas && phCount && !confirm('有 ' + phCount + ' 个切片含 LaTeX 公式，导出为 Word 后是 LaTeX 文本，需用 Word/WPS「插入公式」（LaTeX 输入模式）落成真公式。仍要导出吗？')) return;
-    const body = slices.map(sliceWordHtml).join('');
-    const kind = await exportBlob(wordShell(body));
-    const baseName = safeName(document.getElementById('fileNameInput').value.trim() || '切片');
-    setHint('已导出「' + baseName + '.' + kind + '」' + (kind === 'doc' ? '（Word 兼容格式，Word/WPS 可直接打开另存为 docx）' : '。') +
-      (phCount ? ' 提醒：其中 ' + phCount + ' 个切片含 LaTeX 公式，可在 Word 中用「插入公式」按原 LaTeX 重建。' : ''));
+    await exportWordSlices(slices);
   }
 
   // ===== 导出 Markdown =====
@@ -2727,7 +2823,7 @@
       (report.blockWithoutContent.length ? '　<span class="bad">空内容 ' + report.blockWithoutContent.length + ' 个</span>' : '') + '</div>';
     if (math && math.formulas && math.formulas.length) {
       h += '<div><b>识别到 ' + math.formulas.length + ' 处 Word 公式</b>：' +
-        '<span style="font-size:12px;color:var(--text2)">已按原位置写成 LaTeX（行内 $…$ / 独立 $$…$$）写入「内容」；导出后在 Word / WPS 中用「插入公式」按 LaTeX 重建（勿用图片代替）。</span>' +
+        '<span style="font-size:12px;color:var(--text2)">公式已按原位置写入「内容」。通过本机服务导出 Word 时会自动转换为专业公式。</span>' +
         '<ul>' + math.formulas.map((l, i) => '<li>公式 ' + (i + 1) + '：<code>' + esc(l || '（未提取到文本）') + '</code></li>').join('') + '</ul></div>';
     } else if (math && math.supported && math.oleCount) {
       h += '<div class="bad">文档里有 ' + math.oleCount + ' 个 OLE 嵌入对象（常见于 MathType 公式），这类公式不是 Word 原生公式，无法自动提取文本，需在 Word 中手工重建。</div>';
