@@ -3393,7 +3393,8 @@
         for (let n = 1; n <= pdf.numPages; n++) {
           const page = await pdf.getPage(n);
           const { items } = await page.getTextContent();
-          const text = items.map(item => item.str ? item.str + (item.hasEOL ? '\n' : ' ') : '').join('').trim();
+          // PDF.js can mark a line break on an item with no text.
+          const text = items.map(item => (item.str || '') + (item.hasEOL ? '\n' : item.str ? ' ' : '')).join('').trim();
           if (text) pages.push(text);
           try {
             figures.push(...await extractPdfFigures(page, items, pdfjs.OPS, n));
