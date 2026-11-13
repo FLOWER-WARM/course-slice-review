@@ -559,11 +559,6 @@
     *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
   }
 
-  .textbook-fields { display: grid; gap: 10px; margin-block: 14px; }
-  .textbook-fields label { display: grid; gap: 4px; font-size: 13px; color: var(--text2); }
-  .textbook-fields input { width: 100%; min-width: 0; }
-  #textbookList { overflow-wrap: anywhere; }
-  #textbookList button { margin-inline-start: 8px; }
   .slice-progress { margin-block: 16px; }
   #reviewRows { padding-left: 1.3rem; }
   #reviewRows li { margin-block: 12px; overflow-wrap: anywhere; }
@@ -607,7 +602,6 @@
     <h2 data-page-node-id="Nyl9CgqBOVgqwIcaw4VThy">切片卡片</h2>
     <div class="actions">
       <button class="primary-btn" type="button" onclick="openLeft('generation')" aria-haspopup="dialog">提示词生成</button>
-      <button class="ghost-btn" type="button" onclick="openLeft('generation')">导入教材原图</button>
     </div>
     <div class="card" id="importActionsCard" data-page-node-id="importActionsCard">
       <div class="actions" data-page-node-id="importActions">
@@ -723,29 +717,6 @@
         </div>
         <p class="hint">提示词方式：将提示词和教材交给外部 AI，再将生成的正文导回切片骨架。</p>
       </div>
-      <div id="textbookPanel" class="card flat">
-        <h3>教材原图</h3>
-        <label class="file-btn">添加教材<input id="textbookFiles" type="file" multiple accept=".pdf,.docx,.txt,.md,.markdown"></label>
-        <p class="hint">可分批添加多本 PDF、DOCX、TXT、Markdown。PDF 需有可提取的文字，扫描件请先做 OCR。DOCX 与文字版 PDF 的带编号插图会自动提取；未匹配的 PDF 插图可在下方补选。</p>
-        <ul class="clean" id="textbookList" hidden></ul>
-        <p id="textbookStatus" class="hint" role="status"></p>
-        <p id="figureStatus" class="hint" role="status" hidden></p>
-        <ul id="figureReview" class="clean" hidden></ul>
-        <details id="pdfFigureControls" hidden>
-          <summary>从 PDF 页面框选原图</summary>
-          <div class="textbook-fields">
-            <label>教材<select id="pdfFigureBook"></select></label>
-            <label>页码（从 1 开始）<input class="mini-input" id="pdfFigurePage" type="number" min="1" step="1" value="1"></label>
-            <label>教材图号<input class="mini-input" id="pdfFigureLabel" placeholder="例如 图2-8"></label>
-          </div>
-          <div class="actions">
-            <button type="button" class="ghost-btn" id="showPdfPage">预览页面</button>
-            <button type="button" class="primary-btn" id="savePdfFigure" disabled>保存选区</button>
-          </div>
-          <p id="pdfFigureStatus" class="hint" role="status"></p>
-          <canvas id="pdfFigureCanvas" hidden style="width:100%;touch-action:none;cursor:crosshair"></canvas>
-        </details>
-      </div>
     </div>
 
     <div class="drawer-pane" id="paneRules" data-page-node-id="paneRules">
@@ -775,7 +746,7 @@
         <h3 data-page-node-id="exportH3">导出</h3>
         <p class="hint" id="exportMeta" style="margin-top:0" data-page-node-id="exportMeta"></p>
         <ul class="clean" data-page-node-id="exportRuleList">
-          <li data-page-node-id="exportRuleWord"><b>Word（.docx）</b>：按《知识片段模版》的六字段结构输出，保留图片、表格和代码。公式以 LaTeX 文本保留。</li>
+          <li data-page-node-id="exportRuleWord"><b>Word（.docx）</b>：按《知识片段模版》的六字段结构输出，保留图片、表格和代码。公式自动转换为 Word 可编辑的专业公式，首次导出需联网加载转换组件。</li>
           <li data-page-node-id="exportRuleMd"><b>Markdown（.md）</b>：每个切片输出 <code># 完整切片标题</code> + 内容正文，末尾空行分隔；图片以 data URI 内嵌（文件会较大），公式按 LaTeX 原样保留（行内 <code>$…$</code>、独立 <code>$$…$$</code>），表格转成 Markdown 表格，代码保留语言围栏。该格式可被本工具的「批量导入内容」再次读取（勾选项开启「含字段」后会多出四行字段信息）。</li>
           <li data-page-node-id="exportRuleName">导出文件名取自右侧页面「导出文件名」输入框，留空则为「切片」；全部切片导出为一个文件，Word 版每片之间分页。</li>
         </ul>
@@ -1099,7 +1070,6 @@
       refreshBadge(i);
     });
     updateExportStat();
-    renderFigureReview();
     saveState();
   }
 
@@ -1704,12 +1674,96 @@
     return { html: container.innerHTML, count };
   }
 
+  const PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+  let demoWordConverter;
+  let wordExportInProgress = false;
+
+  async function convertDemoWord(html) {
+    const base = 'https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/';
+    demoWordConverter ??= Promise.all([
+      import(base + 'core.js/+esm'),
+      fetch('https://unpkg.com/pandoc-wasm@1.1.0/src/pandoc.wasm', { signal: AbortSignal.timeout(90000) }).then(response => {
+        if (!response.ok) throw new Error('无法下载公式转换组件');
+        return response.arrayBuffer();
+      })
+    ]).then(([module, wasm]) => module.createPandocInstance(wasm)).catch(() => {
+      demoWordConverter = undefined;
+      throw new Error('公式转换组件加载失败，请检查网络后重试。');
+    });
+    const { convert } = await demoWordConverter;
+    const parsed = await convert({ from: 'html+tex_math_single_backslash', to: 'json' }, html, {});
+    const document = JSON.parse(parsed.stdout);
+    document.blocks = document.blocks.map(block => {
+      if (block.t !== 'Div') return block;
+      const [attributes, contents] = block.c;
+      if (attributes[1].includes('slice-word-page-break')) return { t: 'RawBlock', c: ['openxml', PAGE_BREAK] };
+      if (attributes[2].some(([key, value]) => key === 'custom-style' && value === 'Source Code')) {
+        for (const paragraph of contents) {
+          if (paragraph.t === 'Para') {
+            paragraph.c = paragraph.c.map(item => item.t === 'Code' ? { t: 'Str', c: item.c[1] } : item);
+          }
+        }
+      }
+      return block;
+    });
+    const output = await convert({ from: 'json', to: 'docx', 'output-file': 'slices.docx' },
+      JSON.stringify(document), {});
+    const file = output.files['slices.docx'];
+    if (!file?.arrayBuffer) throw new Error('DOCX output missing');
+    return file;
+  }
+
+  async function formatNativeWord(zip, xml) {
+    const layout = '<w:pgSz w:w="11906" w:h="16838"/>' +
+      '<w:pgMar w:top="1701" w:right="1417" w:bottom="1417" w:left="1701" w:header="720" w:footer="720" w:gutter="0"/>';
+    const borders = '<w:tblBorders>' +
+      ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(side =>
+        '<w:' + side + ' w:val="single" w:sz="4" w:color="000000"/>').join('') + '</w:tblBorders>';
+    const formatted = xml.replace(/<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>/g, section =>
+      section.replace(/<w:pg(?:Sz|Mar)\b[^>]*\/>/g, '').replace('</w:sectPr>', layout + '</w:sectPr>'));
+    zip.file('word/document.xml', formatted.replace(/<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>/g, properties =>
+      properties.includes('<w:tblBorders') ? properties :
+        properties.replace(/<w:(?:shd|tblLayout|tblCellMar|tblLook)\b|<\/w:tblPr>/, tag => borders + tag)));
+    const stylesPath = 'word/styles.xml';
+    const styles = await zip.file(stylesPath).async('string');
+    const codeStyle = SOURCECODE_STYLE_XML.match(/<w:style\b[\s\S]*?<\/w:style>/)[0];
+    zip.file(stylesPath, styles.replace(/<w:style\b[^>]*w:styleId="SourceCode"[^>]*>[\s\S]*?<\/w:style>/, codeStyle));
+    return zip.generateAsync({
+      type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      compression: 'DEFLATE'
+    });
+  }
+
   async function exportWordSlices(selected, nameSuffix) {
-    const formulaCount = selected.reduce((sum, slice) => sum + prepareWordContent(slice.content).count, 0);
-    if (formulaCount && !confirm('演示版将公式以 LaTeX 文本导出。继续导出 Word 吗？')) return;
-    const body = selected.map(slice => sliceWordHtml(slice)).join('<p style="page-break-before:always"></p>');
-    const kind = await exportBlob(wordShell(body), nameSuffix);
-    setHint('已导出 Word（.' + kind + '）。');
+    if (wordExportInProgress) return;
+    const prepared = selected.map(slice => prepareWordContent(slice.content));
+    const formulaCount = prepared.reduce((sum, item) => sum + item.count, 0);
+    if (!formulaCount) {
+      const body = selected.map(slice => sliceWordHtml(slice)).join('<p style="page-break-before:always"></p>');
+      const kind = await exportBlob(wordShell(body), nameSuffix);
+      setHint('已导出 Word（.' + kind + '）。');
+      return;
+    }
+
+    wordExportInProgress = true;
+    setHint('正在导出 Word 专业公式…');
+    try {
+      const body = selected.map((slice, i) => sliceWordHtml(slice, prepared[i].html))
+        .join('<div class="slice-word-page-break"><p>分页</p></div>');
+      const blob = await convertDemoWord(body);
+      const zip = await JSZip.loadAsync(blob);
+      const xml = await zip.file('word/document.xml').async('string');
+      const converted = (xml.match(/<m:oMath(?:\s|>)/g) || []).length;
+      const base = safeName(document.getElementById('fileNameInput').value.trim() || '切片');
+      download(await formatNativeWord(zip, xml), base + (nameSuffix ? '-' + safeName(nameSuffix) : '') + '.docx');
+      const remaining = Math.max(0, formulaCount - converted);
+      setHint('已导出 Word，包含 ' + converted + ' 处可编辑公式。' +
+        (remaining ? ' 有 ' + remaining + ' 处未能转换，已保留公式文本，请检查 LaTeX 写法。' : ''), remaining > 0);
+    } catch (error) {
+      setHint(error.message || 'Word 导出失败。', true);
+    } finally {
+      wordExportInProgress = false;
+    }
   }
 
   async function exportOne(i) {
@@ -2710,7 +2764,6 @@
       if (b.hasImg && !b.hasCaption && html.indexOf('【图片标题】') < 0) {
         html = html.replace(/<p>((?:<img[^>]*>)+)<\/p>/g, '<p>$1</p><p class="cap-line">【图片标题】</p><p class="cap-line">【图片描述】</p>');
       }
-      html = bindFigures(html, m.figures || allTextbookFigures());
       slices[m.i].content = html;
       // 按实际内容重算「格式」（文本/图片/表格/公式/代码）
       syncFmtFromContent(m.i);
@@ -2719,7 +2772,6 @@
       refreshBadge(m.i);
     });
     importBackup.forEach(entry => { entry.applied = entry.slice.content; });
-    renderFigureReview();
     updateExportStat();
     saveState();
   }
@@ -2746,7 +2798,7 @@
       (report.blockWithoutContent.length ? '　<span class="bad">空内容 ' + report.blockWithoutContent.length + ' 个</span>' : '') + '</div>';
     if (math && math.formulas && math.formulas.length) {
       h += '<div><b>识别到 ' + math.formulas.length + ' 处 Word 公式</b>：' +
-        '<span style="font-size:12px;color:var(--text2)">公式已按原位置写入「内容」。演示版 Word 导出保留 LaTeX 文本。</span>' +
+        '<span style="font-size:12px;color:var(--text2)">公式已按原位置写入「内容」。导出 Word 时自动转换为专业公式。</span>' +
         '<ul>' + math.formulas.map((l, i) => '<li>公式 ' + (i + 1) + '：<code>' + esc(l || '（未提取到文本）') + '</code></li>').join('') + '</ul></div>';
     } else if (math && math.supported && math.oleCount) {
       h += '<div class="bad">文档里有 ' + math.oleCount + ' 个 OLE 嵌入对象（常见于 MathType 公式），这类公式不是 Word 原生公式，无法自动提取文本，需在 Word 中手工重建。</div>';
@@ -2953,7 +3005,6 @@
     saveState();
     const box = document.getElementById('importReport');
     if (box) { box.hidden = true; box.innerHTML = ''; }
-    renderFigureReview();
     setHint('已撤销本次批量填充。');
   }
 
@@ -3259,564 +3310,7 @@
   }
   document.getElementById('sourceInput').addEventListener('input', () => { refreshPrompt(); saveState(); });
   document.getElementById('fileNameInput').addEventListener('input', () => { saveState(); renderExportMeta(); });
-  const textbookFiles = document.getElementById('textbookFiles');
-  const textbookList = document.getElementById('textbookList');
-  const textbookStatus = document.getElementById('textbookStatus');
-  const textbooks = [];
-  let textbookSequence = 0;
-  const textbookSession = crypto.getRandomValues(new Uint32Array(1))[0].toString(36).toUpperCase();
-  let readingTextbooks = false;
-  let pdfLibrary;
-
-  function loadPdfLibrary() {
-    if (!pdfLibrary) {
-      const base = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/';
-      pdfLibrary = import(base + 'pdf.min.mjs').then(pdfjs => {
-        pdfjs.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.mjs';
-        return pdfjs;
-      }).catch(() => {
-        pdfLibrary = null;
-        throw new Error('PDF 解析组件加载失败，请检查网络后重试。');
-      });
-    }
-    return pdfLibrary;
-  }
-
-  function pdfFigureCaptions(items, viewport) {
-    const lines = [];
-    for (const item of items) {
-      if (!item.str?.trim() || !item.transform) continue;
-      const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
-      const width = Math.abs(item.width * viewport.scale);
-      const previous = lines[lines.length - 1];
-      const gap = previous ? x - previous.right : Infinity;
-      if (previous && Math.abs(y - previous.y) < 3 && gap >= -3 && gap < 12) {
-        previous.text += (gap > 3 ? ' ' : '') + item.str;
-        previous.right = Math.max(previous.right, x + width);
-      } else {
-        lines.push({ x, y, right: x + width, text: item.str });
-      }
-    }
-    return lines.flatMap(line => {
-      const caption = line.text.normalize('NFKC').trim();
-      const number = figureNumber(caption);
-      if (!number || !/^(?:图|fig(?:ure)?\.?)\s*\d/iu.test(caption) || caption.length > 160) return [];
-      return [{ ...line, number, caption }];
-    });
-  }
-
-  function pdfImageBounds(operators, ops, viewport) {
-    const multiply = (left, right) => {
-      const [a, b, c, d, e, f] = left;
-      const [g, h, i, j, k, l] = right;
-      return [a*g+c*h, b*g+d*h, a*i+c*j, b*i+d*j, a*k+c*l+e, b*k+d*l+f];
-    };
-    let matrix = [1, 0, 0, 1, 0, 0];
-    const stack = [];
-    const boxes = [];
-    operators.fnArray.forEach((operation, index) => {
-      const args = operators.argsArray[index] || [];
-      if (operation === ops.save || operation === ops.paintFormXObjectBegin || operation === ops.beginGroup) {
-        stack.push(matrix);
-        const formMatrix = operation === ops.beginGroup ? args[0]?.matrix :
-          operation === ops.paintFormXObjectBegin ? args[0] : null;
-        if (formMatrix?.length === 6) matrix = multiply(matrix, formMatrix);
-      } else if (operation === ops.restore || operation === ops.paintFormXObjectEnd || operation === ops.endGroup) {
-        matrix = stack.pop() || [1, 0, 0, 1, 0, 0];
-      } else if (operation === ops.transform && args.length === 6) {
-        matrix = multiply(matrix, args);
-      } else if (operation === ops.paintImageXObject || operation === ops.paintInlineImageXObject) {
-        const [a, b, c, d, e, f] = matrix;
-        const points = [[e, f], [a+e, b+f], [c+e, d+f], [a+c+e, b+d+f]]
-          .map(([x, y]) => viewport.convertToViewportPoint(x, y));
-        const x = Math.max(0, Math.floor(Math.min(...points.map(point => point[0]))));
-        const y = Math.max(0, Math.floor(Math.min(...points.map(point => point[1]))));
-        const right = Math.min(Math.ceil(viewport.width), Math.ceil(Math.max(...points.map(point => point[0]))));
-        const bottom = Math.min(Math.ceil(viewport.height), Math.ceil(Math.max(...points.map(point => point[1]))));
-        const width = right - x;
-        const height = bottom - y;
-        if (width >= 40 && height >= 30 && width * height < viewport.width * viewport.height * 0.76) {
-          if (!boxes.some(box => Math.abs(box.x-x)+Math.abs(box.y-y)+Math.abs(box.right-right)+Math.abs(box.bottom-bottom) < 6)) {
-            boxes.push({ x, y, right, bottom, width, height });
-          }
-        }
-      }
-    });
-    return boxes;
-  }
-
-  function matchPdfCaptions(captions, boxes) {
-    const proposals = [];
-    for (const caption of captions) {
-      const candidates = boxes.flatMap(box => {
-        const below = caption.y - box.bottom;
-        const above = box.y - caption.y;
-        const overlap = Math.min(box.right, caption.right) - Math.max(box.x, caption.x);
-        if (overlap < Math.min(16, (caption.right - caption.x) * 0.35)) return [];
-        if (below >= 0 && below <= 65) return [{ box, score: below }];
-        if (above >= 5 && above <= 50) return [{ box, score: above + 18 }];
-        return [];
-      }).sort((a, b) => a.score - b.score);
-      if (!candidates.length || (candidates.length > 1 && candidates[1].score - candidates[0].score < 12)) continue;
-      proposals.push({ caption, box: candidates[0].box });
-    }
-    return proposals.filter(proposal =>
-      proposals.filter(other => other.box === proposal.box || other.caption.number === proposal.caption.number).length === 1);
-  }
-
-  async function renderPdfFigureRegion(page, region, referenceScale) {
-    const widthPt = region.width / referenceScale;
-    const heightPt = region.height / referenceScale;
-    const scale = Math.min(300 / 72, 2400 / Math.max(widthPt, heightPt));
-    const ratio = scale / referenceScale;
-    const left = Math.floor(region.x * ratio);
-    const top = Math.floor(region.y * ratio);
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.ceil((region.x + region.width) * ratio) - left;
-    canvas.height = Math.ceil((region.y + region.height) * ratio) - top;
-    try {
-      await page.render({
-        canvasContext: canvas.getContext('2d'),
-        viewport: page.getViewport({ scale }),
-        transform: [1, 0, 0, 1, -left, -top]
-      }).promise;
-      return { src: canvas.toDataURL('image/png'), widthPt };
-    } finally {
-      canvas.width = canvas.height = 0;
-    }
-  }
-
-  async function extractPdfFigures(page, items, ops, pageNumber) {
-    const base = page.getViewport({ scale: 1 });
-    const viewport = page.getViewport({ scale: Math.min(1.75, 1500 / Math.max(base.width, base.height)) });
-    const captions = pdfFigureCaptions(items, viewport);
-    if (!captions.length) return [];
-    const operators = await page.getOperatorList();
-    const pairs = matchPdfCaptions(captions, pdfImageBounds(operators, ops, viewport));
-    const figures = [];
-    for (const { caption, box } of pairs) {
-      const image = await renderPdfFigureRegion(page, box, viewport.scale);
-      figures.push({ number: caption.number, caption: caption.caption, page: pageNumber, ...image });
-    }
-    return figures;
-  }
-
-  async function readTextbook(file) {
-    const extension = file.name.split('.').pop().toLowerCase();
-    if (extension === 'pdf') {
-      const pdfjs = await loadPdfLibrary();
-      const task = pdfjs.getDocument({ data: await file.arrayBuffer(), isEvalSupported: false });
-      try {
-        const pdf = await task.promise;
-        const pages = [];
-        const figures = [];
-        let figureReadErrors = 0;
-        for (let n = 1; n <= pdf.numPages; n++) {
-          const page = await pdf.getPage(n);
-          const { items } = await page.getTextContent();
-          // PDF.js can mark a line break on an item with no text.
-          const text = items.map(item => (item.str || '') + (item.hasEOL ? '\n' : item.str ? ' ' : '')).join('').trim();
-          if (text) pages.push(text);
-          try {
-            figures.push(...await extractPdfFigures(page, items, pdfjs.OPS, n));
-          } catch {
-            figureReadErrors++;
-          }
-          page.cleanup();
-        }
-        return { text: pages.join('\n\n'), figures, pdfFile: file, figureReadErrors };
-      } finally {
-        await task.destroy();
-      }
-    }
-    if (extension === 'docx') {
-      if (typeof mammoth === 'undefined') throw new Error('Word 解析组件未加载，请检查网络或转为 TXT。');
-      const result = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() }, {
-        convertImage: mammoth.images.imgElement(async image => {
-          if (!/^image\/(png|jpeg|gif|webp)$/i.test(image.contentType)) return { src: '' };
-          return { src: 'data:' + image.contentType + ';base64,' + await image.read('base64') };
-        })
-      });
-      return indexWordTextbook(result.value);
-    }
-    if (['txt', 'md', 'markdown'].includes(extension)) return { text: (await file.text()).trim(), figures: [] };
-    throw new Error('请选择 PDF、DOCX、TXT 或 Markdown 文件。');
-  }
-
-  function renderTextbooks() {
-    textbookList.replaceChildren();
-    textbookList.hidden = !textbooks.length;
-    const pdfSelect = document.getElementById('pdfFigureBook');
-    const selectedPdf = pdfSelect.value;
-    const pdfBooks = textbooks.filter(book => book.pdfFile);
-    pdfSelect.replaceChildren(...pdfBooks.map(book => new Option(book.name, book.id)));
-    if (pdfBooks.some(book => book.id === selectedPdf)) pdfSelect.value = selectedPdf;
-    document.getElementById('pdfFigureControls').hidden = !pdfBooks.length;
-    textbooks.forEach((book, index) => {
-      const item = document.createElement('li');
-      item.textContent = book.name + ' · ' + book.text.length.toLocaleString() + ' 字符 · ' + book.figures.length + ' 张索引图' + (!book.text ? ' · 扫描件，生成正文前请另传 OCR 文本' : '');
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'ghost-btn';
-      remove.textContent = '移除';
-      remove.setAttribute('aria-label', '移除 ' + book.name);
-      remove.disabled = readingTextbooks;
-      remove.addEventListener('click', () => {
-        textbooks.splice(index, 1);
-        renderTextbooks();
-        renderFigureReview();
-      });
-      item.append(remove);
-      textbookList.append(item);
-    });
-  }
-
-  textbookFiles.addEventListener('change', async () => {
-    const files = Array.from(textbookFiles.files);
-    textbookFiles.value = '';
-    if (!files.length || readingTextbooks) return;
-    readingTextbooks = true;
-    textbookFiles.disabled = true;
-    renderTextbooks();
-    const issues = [];
-    try {
-      for (const file of files) {
-        textbookStatus.textContent = '正在读取 ' + file.name;
-        try {
-          const book = await readTextbook(file);
-          if (!book.text && !book.pdfFile) throw new Error('文件没有可用正文。');
-          book.name = file.name;
-          book.id = 'T' + textbookSession + 'B' + (++textbookSequence);
-          textbooks.push(book);
-          if (book.figureReadErrors) issues.push(file.name + '：' + book.figureReadErrors + ' 页图像读取失败，可使用框选补图。');
-        } catch (error) {
-          issues.push(file.name + '：' + (error.message || '读取失败'));
-        }
-      }
-    } finally {
-      readingTextbooks = false;
-      textbookFiles.disabled = false;
-      renderTextbooks();
-      resolveSliceFigures();
-      textbookStatus.textContent = issues.join('；') || '教材插图已读取，可匹配正文中的图号。';
-    }
-  });
-
-  const figureNumberPattern = /(?:图|fig(?:ure)?\.?)[ \t]*([0-9０-９]+(?:[ \t]*[-‐‑–—－.．][ \t]*[0-9０-９]+)*)/iu;
-
-  function figureNumber(text) {
-    return (text.normalize('NFKC').match(figureNumberPattern)?.[1] || '')
-      .replace(/[\s]/g, '').replace(/[‐‑–—.]/g, '-');
-  }
-
-  function indexWordTextbook(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const blocks = [...doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li')].filter(block => !block.querySelector('p, li'));
-    const figures = [];
-    const hasImage = block => block?.querySelector('img');
-    blocks.forEach((block, index) => {
-      const images = [...block.querySelectorAll('img[src^="data:image/"]')];
-      if (images.length !== 1) return;
-      const own = block.textContent.trim();
-      const next = blocks[index + 1];
-      const previous = blocks[index - 1];
-      const isCaption = text => /^(?:图\s*\d|fig(?:ure)?\.?\s*\d)/iu.test(text.normalize('NFKC')) &&
-        text.length < 160 && figureNumber(text);
-      const below = !hasImage(next) && (next?.textContent.trim() || '');
-      const above = !hasImage(previous) && !hasImage(blocks[index - 2]) && (previous?.textContent.trim() || '');
-      const caption = isCaption(own) ? own : !own && isCaption(below) ? below :
-        !own && isCaption(above) ? above : '';
-      if (caption) figures.push({ number: figureNumber(caption), caption, src: images[0].getAttribute('src') });
-    });
-    return { text: blocks.map(block => block.textContent.trim()).filter(Boolean).join('\n\n'), figures };
-  }
-
-  function allTextbookFigures() {
-    return textbooks.flatMap(book => book.figures.map((figure, index) =>
-      ({ ...figure, id: book.id + '-F' + (index + 1), book: book.name })));
-  }
-
-  function figureReference(text) {
-    const marker = text.match(/^\[\[FIG:([^\[\]]+)\]\]$/i);
-    if (marker) return { id: marker[1].trim().toUpperCase(), number: figureNumber(marker[1]) };
-    if (/^[（(]?\s*(?:图|fig(?:ure)?\.?)[ \t]*[0-9０-９]+(?:[ \t]*[-‐‑–—－.．][ \t]*[0-9０-９]+)*\s*[）)]?$/iu.test(text)) {
-      return { number: figureNumber(text) };
-    }
-    return null;
-  }
-
-  function findFigureCandidates(ref, figures) {
-    if (ref.id) {
-      const exact = figures.filter(figure => figure.id === ref.id);
-      if (exact.length || !ref.number) return exact;
-    }
-    return figures.filter(figure => ref.number && figure.number === ref.number);
-  }
-
-  function putFigure(paragraph, figure) {
-    const image = document.createElement('img');
-    image.src = figure.src;
-    image.alt = figure.caption;
-    image.style.maxWidth = '100%';
-    if (figure.widthPt) {
-      image.style.width = Math.min(420, Math.round(figure.widthPt)) + 'pt';
-      image.style.height = 'auto';
-    }
-    paragraph.replaceChildren(image);
-    const next = paragraph.nextElementSibling;
-    if (next?.textContent.trim().startsWith('【图片标题】')) {
-      next.textContent = '【图片标题】' + figure.caption;
-    } else {
-      const caption = document.createElement('p');
-      caption.className = 'cap-line';
-      caption.textContent = '【图片标题】' + figure.caption;
-      paragraph.after(caption);
-    }
-  }
-
-  function bindFigures(html, figures) {
-    const template = document.createElement('template');
-    template.innerHTML = html;
-    let changed = false;
-    template.content.querySelectorAll('p').forEach(caption => {
-      const text = caption.textContent.trim();
-      const number = text.startsWith('【图片标题】') && figureNumber(text);
-      const previous = caption.previousElementSibling;
-      if (!number) return;
-      const existingImage = previous?.querySelector('img');
-      if (existingImage) {
-        const candidates = findFigureCandidates({ number }, allTextbookFigures());
-        const figure = candidates[0];
-        // Older PDF inserts used only max-width and the original caption as alt text.
-        if (candidates.length === 1 && figure.widthPt && existingImage.alt === figure.caption &&
-            !existingImage.style.width && existingImage.style.maxWidth === '100%') {
-          putFigure(previous, figure);
-          changed = true;
-        }
-        return;
-      }
-      if (figureReference(previous?.textContent.trim() || '')) return;
-      const placeholder = document.createElement('p');
-      placeholder.textContent = '（图' + number + '）';
-      caption.before(placeholder);
-      changed = true;
-    });
-    template.content.querySelectorAll('p').forEach(paragraph => {
-      if (paragraph.children.length) return;
-      const ref = figureReference(paragraph.textContent.trim());
-      if (!ref) return;
-      const candidates = findFigureCandidates(ref, figures);
-      const unambiguous = ref.id || findFigureCandidates(ref, allTextbookFigures()).length === 1;
-      if (candidates.length === 1 && unambiguous) {
-        putFigure(paragraph, candidates[0]);
-        changed = true;
-      }
-    });
-    return changed ? template.innerHTML : html;
-  }
-
-  function resolveSliceFigures() {
-    const figures = allTextbookFigures();
-    slices.forEach((slice, i) => {
-      const resolved = bindFigures(slice.content, figures);
-      if (resolved === slice.content) return;
-      document.getElementById('content' + i).innerHTML = resolved;
-      onContentInput(i);
-    });
-    renderFigureReview();
-  }
-
-  function renderFigureReview() {
-    const list = document.getElementById('figureReview');
-    list.replaceChildren();
-    const figures = allTextbookFigures();
-    slices.forEach((slice, i) => {
-      const editor = document.getElementById('content' + i);
-      if (!editor) return;
-      editor.querySelectorAll('p').forEach(paragraph => {
-        if (paragraph.children.length) return;
-        const reference = paragraph.textContent.trim();
-        const ref = figureReference(reference);
-        if (!ref) return;
-        const item = document.createElement('li');
-        const label = document.createElement('span');
-        label.textContent = slice.title + ' · ' + reference + ' ';
-        item.append(label);
-        const candidates = findFigureCandidates(ref, figures);
-        const options = candidates.length ? candidates : figures;
-        if (options.length) {
-          const select = document.createElement('select');
-          select.setAttribute('aria-label', '选择 ' + slice.title + ' 的原图');
-          select.append(new Option('选择原图', ''), ...options.map(figure =>
-            new Option(figure.book + (figure.page ? ' 第 ' + figure.page + ' 页' : '') + ' · ' + figure.caption, figure.id)));
-          const thumb = document.createElement('img');
-          thumb.hidden = true;
-          thumb.style.cssText = 'max-width:160px;max-height:100px;display:block';
-          thumb.alt = '原图预览';
-          const insert = document.createElement('button');
-          insert.type = 'button';
-          insert.className = 'ghost-btn';
-          insert.textContent = '插入';
-          insert.disabled = true;
-          select.addEventListener('change', () => {
-            const figure = options.find(candidate => candidate.id === select.value);
-            thumb.hidden = !figure;
-            insert.disabled = !figure;
-            if (figure) thumb.src = figure.src;
-          });
-          insert.addEventListener('click', () => {
-            const figure = options.find(candidate => candidate.id === select.value);
-            if (!figure || !editor.contains(paragraph) || paragraph.textContent.trim() !== reference) return;
-            putFigure(paragraph, figure);
-            onContentInput(i);
-            renderFigureReview();
-          });
-          item.append(select, insert, thumb);
-        } else {
-          item.append('· 可添加带图号的 DOCX，或从 PDF 页面框选原图。');
-        }
-        list.append(item);
-      });
-    });
-    list.hidden = !list.children.length;
-    const status = document.getElementById('figureStatus');
-    status.hidden = list.hidden;
-    status.textContent = list.hidden ? '' : '待确认原图 ' + list.children.length + ' 处';
-  }
-
-  const pdfCanvas = document.getElementById('pdfFigureCanvas');
-  const cropStatus = document.getElementById('pdfFigureStatus');
-  const cropSave = document.getElementById('savePdfFigure');
-  const cropBook = document.getElementById('pdfFigureBook');
-  const cropPage = document.getElementById('pdfFigurePage');
-  const pageButton = document.getElementById('showPdfPage');
-  let displayedPdf = null;
-  let cropStart = null;
-  let selection = null;
-
-  function redrawPdfSelection() {
-    if (!displayedPdf) return;
-    const ctx = pdfCanvas.getContext('2d');
-    ctx.drawImage(displayedPdf.canvas, 0, 0);
-    if (!selection) return;
-    ctx.strokeStyle = '#128365';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(selection.x, selection.y, selection.width, selection.height);
-  }
-
-  function cropPoint(event) {
-    const rect = pdfCanvas.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(pdfCanvas.width, Math.round((event.clientX - rect.left) * pdfCanvas.width / rect.width))),
-      y: Math.max(0, Math.min(pdfCanvas.height, Math.round((event.clientY - rect.top) * pdfCanvas.height / rect.height)))
-    };
-  }
-
-  pageButton.addEventListener('click', async () => {
-    if (readingTextbooks) return;
-    const book = textbooks.find(entry => entry.id === cropBook.value);
-    const page = Number(cropPage.value);
-    if (!book || !Number.isInteger(page) || page < 1) {
-      cropStatus.textContent = '请选择 PDF 并填写有效页码。';
-      return;
-    }
-    pageButton.disabled = true;
-    cropSave.disabled = true;
-    pdfCanvas.hidden = true;
-    displayedPdf = null;
-    selection = null;
-    cropStatus.textContent = '正在渲染页面…';
-    let task;
-    try {
-      const pdfjs = await loadPdfLibrary();
-      task = pdfjs.getDocument({ data: await book.pdfFile.arrayBuffer(), isEvalSupported: false });
-      const pdf = await task.promise;
-      if (page > pdf.numPages) throw new Error('该文件只有 ' + pdf.numPages + ' 页。');
-      const pdfPage = await pdf.getPage(page);
-      const base = pdfPage.getViewport({ scale: 1 });
-      const viewport = pdfPage.getViewport({ scale: Math.min(2, 1600 / Math.max(base.width, base.height)) });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
-      await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      displayedPdf = { book, page, canvas, scale: viewport.scale };
-      pdfCanvas.width = canvas.width;
-      pdfCanvas.height = canvas.height;
-      pdfCanvas.hidden = false;
-      redrawPdfSelection();
-      cropStatus.textContent = '正在预览第 ' + page + ' 页。拖动框选插图，再填写教材图号。';
-    } catch (error) {
-      cropStatus.textContent = error.message || '页面渲染失败。';
-    } finally {
-      pageButton.disabled = false;
-      if (task) await task.destroy().catch(() => {});
-    }
-  });
-
-  pdfCanvas.addEventListener('pointerdown', event => {
-    if (!displayedPdf) return;
-    cropStart = cropPoint(event);
-    pdfCanvas.setPointerCapture(event.pointerId);
-    cropSave.disabled = true;
-    selection = null;
-    redrawPdfSelection();
-  });
-  pdfCanvas.addEventListener('pointermove', event => {
-    if (!cropStart) return;
-    const end = cropPoint(event);
-    selection = { x: Math.min(cropStart.x, end.x), y: Math.min(cropStart.y, end.y),
-      width: Math.abs(cropStart.x - end.x), height: Math.abs(cropStart.y - end.y) };
-    redrawPdfSelection();
-  });
-  pdfCanvas.addEventListener('pointerup', () => {
-    cropStart = null;
-    cropSave.disabled = !(selection?.width >= 8 && selection?.height >= 8);
-  });
-  pdfCanvas.addEventListener('pointercancel', () => {
-    cropStart = null;
-    selection = null;
-    cropSave.disabled = true;
-    redrawPdfSelection();
-  });
-  cropSave.addEventListener('click', async () => {
-    if (!displayedPdf || !selection || readingTextbooks) return;
-    const preview = displayedPdf;
-    const { book, page, scale } = preview;
-    if (!textbooks.includes(book) || cropBook.value !== book.id || Number(cropPage.value) !== page) {
-      cropStatus.textContent = '教材或页码已变更，请重新预览后框选。';
-      return;
-    }
-    const caption = document.getElementById('pdfFigureLabel').value.trim();
-    const number = figureNumber(caption);
-    if (!number) { cropStatus.textContent = '请填写教材图号，例如「图2-8 骨迷路」。'; return; }
-    const region = selection;
-    cropSave.disabled = true;
-    pageButton.disabled = true;
-    pdfCanvas.style.pointerEvents = 'none';
-    cropStatus.textContent = '正在从 PDF 原页生成高清插图…';
-    let task;
-    try {
-      const pdfjs = await loadPdfLibrary();
-      task = pdfjs.getDocument({ data: await book.pdfFile.arrayBuffer(), isEvalSupported: false });
-      const pdf = await task.promise;
-      const image = await renderPdfFigureRegion(await pdf.getPage(page), region, scale);
-      if (!textbooks.includes(book)) return;
-      book.figures.push({ number, caption, page, ...image });
-      cropStatus.textContent = '已保存高清插图「' + caption + '」。';
-      renderTextbooks();
-      resolveSliceFigures();
-    } catch (error) {
-      cropStatus.textContent = error.message || '高清插图生成失败。';
-      cropSave.disabled = displayedPdf !== preview || selection !== region;
-    } finally {
-      if (task) await task.destroy().catch(() => {});
-      pageButton.disabled = false;
-      pdfCanvas.style.pointerEvents = '';
-    }
-  });
-
   restoreState();
-  renderFigureReview();
   refreshPrompt();
   renderExportMeta();
 
