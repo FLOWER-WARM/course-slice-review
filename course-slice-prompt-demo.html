@@ -1049,8 +1049,8 @@
                 '</select>' +
                 '<button onclick="insertCodeFromClipboard(' + i + ')">粘贴剪贴板代码</button>' +
                 '<button onclick="insertCodeBlock(' + i + ')">插入代码块</button>' +
-                '<button onclick="insertMathInline(' + i + ')">插入行内公式 $…$</button>' +
-                '<button onclick="insertMathBlock(' + i + ')">插入独立公式 $$…$$</button>' +
+                '<button onmousedown="event.preventDefault()" onclick="insertMathInline(' + i + ')">插入行内公式 $…$</button>' +
+                '<button onmousedown="event.preventDefault()" onclick="insertMathBlock(' + i + ')">插入独立公式 $$…$$</button>' +
                 '<span class="tool-sep"></span>' +
                 '<button onclick="clearContent(' + i + ')">清空内容</button>' +
               '</div>' +
@@ -1259,41 +1259,78 @@
 
   // 公式定界符插入：行内 $…$ / 独立 $$…$$（不再使用【公式：…】占位文字）
   // 插入后把光标停到两个（两组）$ 之间，直接粘 LaTeX 即可
-  function caretInsideLastMath(el, offset) {
-    const nodes = el.querySelectorAll('.formula-ph');
-    const node = nodes[nodes.length - 1];
-    if (!node) return;
-    const tn = node.firstChild;
-    if (!tn || tn.nodeType !== 3) return;
-    const r = document.createRange();
-    r.setStart(tn, Math.min(offset, tn.nodeValue.length));
-    r.collapse(true);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(r);
-  }
+  const formulaCarets = new WeakMap();
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    const editor = range.startContainer.parentElement?.closest('.content-edit') ||
+      (range.startContainer.matches?.('.content-edit') ? range.startContainer : null);
+    if (!editor || !editor.contains(range.endContainer)) return;
+    const caret = range.cloneRange();
+    caret.collapse(false);
+    formulaCarets.set(editor, caret);
+  });
 
-  function insertMathInline(i) {
-    const el = document.getElementById('content' + i);
-    if (!el) return;
-    placeCaretAtEnd(el);
-    insertHtmlAtCursor('<span class="formula-ph">$$</span>');
-    caretInsideLastMath(el, 1);
+  function insertFormulaAtCaret(i, block) {
+    const editor = document.getElementById('content' + i);
+    if (!editor) return;
+    const selection = window.getSelection();
+    const current = selection.rangeCount ? selection.getRangeAt(0) : null;
+    const caret = current && editor.contains(current.startContainer) && editor.contains(current.endContainer)
+      ? current.cloneRange() : formulaCarets.get(editor);
+    if (caret && editor.contains(caret.endContainer)) {
+      editor.focus();
+      caret.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(caret);
+    } else {
+      placeCaretAtEnd(editor);
+    }
+
+    const marker = 'new-formula-' + crypto.randomUUID();
+    const formula = '<span class="formula-ph" id="' + marker + '">' + (block ? '$$$$' : '$$') + '</span>';
+    if (block) {
+      const range = selection.getRangeAt(0);
+      const parent = range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? range.startContainer : range.startContainer.parentElement;
+      const paragraph = parent.closest('p, div, h1, h2, h3, h4, h5, h6');
+      const math = document.createElement('p');
+      math.className = 'math-block';
+      math.innerHTML = formula;
+      if (paragraph && paragraph !== editor && editor.contains(paragraph)) {
+        const rest = range.cloneRange();
+        rest.setEnd(paragraph, paragraph.childNodes.length);
+        const tail = paragraph.cloneNode(false);
+        tail.removeAttribute('id');
+        tail.append(rest.extractContents());
+        paragraph.after(math);
+        if (tail.textContent || tail.querySelector('img, br')) math.after(tail);
+        if (!paragraph.textContent && !paragraph.querySelector('img, br')) paragraph.remove();
+      } else if (parent === editor || parent.matches('td, th, li, blockquote')) {
+        range.insertNode(math);
+      } else {
+        insertHtmlAtCursor('<br>' + formula + '<br>');
+      }
+    } else {
+      insertHtmlAtCursor(formula);
+    }
+    const inserted = document.getElementById(marker);
+    if (!inserted?.firstChild) return;
+    inserted.removeAttribute('id');
+    const next = document.createRange();
+    next.setStart(inserted.firstChild, block ? 2 : 1);
+    next.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(next);
+    formulaCarets.set(editor, next.cloneRange());
     addFmt(i, '公式');
     onContentInput(i);
-    setHint('已插入行内公式 $…$（「格式」补为「' + slices[i].fmt + '」）：把 LaTeX 粘到两个 $ 之间，如 $E=mc^2$。');
+    setHint(block ? '已插入独立公式，请在两组 $ 之间输入 LaTeX。' : '已插入行内公式，请在两个 $ 之间输入 LaTeX。');
   }
 
-  function insertMathBlock(i) {
-    const el = document.getElementById('content' + i);
-    if (!el) return;
-    placeCaretAtEnd(el);
-    insertHtmlAtCursor('<p class="math-block"><span class="formula-ph">$$$$</span></p>');
-    caretInsideLastMath(el, 2);
-    addFmt(i, '公式');
-    onContentInput(i);
-    setHint('已插入独立公式 $$…$$（「格式」补为「' + slices[i].fmt + '」）：把 LaTeX 粘到两组 $ 之间；多行公式可换行书写。');
-  }
+  function insertMathInline(i) { insertFormulaAtCaret(i, false); }
+  function insertMathBlock(i) { insertFormulaAtCaret(i, true); }
 
   // ===== 图片插入（按钮 / 拖拽 / 粘贴共用） =====
   function imageParaHtml(dataUrl, cb) {
