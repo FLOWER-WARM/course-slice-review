@@ -601,7 +601,6 @@
   <section id="cardsSec" hidden data-page-node-id="UFEtxLJHpn2U5dTBibt6tF">
     <h2 data-page-node-id="Nyl9CgqBOVgqwIcaw4VThy">切片卡片</h2>
     <div class="actions">
-      <button class="primary-btn" type="button" onclick="openLeft('generation')" aria-haspopup="dialog">提示词生成</button>
     </div>
     <div class="card" id="importActionsCard" data-page-node-id="importActionsCard">
       <div class="actions" data-page-node-id="importActions">
@@ -708,15 +707,6 @@
           </div>
         </div>
       </section>
-    </div>
-
-    <div class="drawer-pane" id="paneGeneration">
-      <div class="card flat">
-        <div class="actions">
-          <button class="primary-btn" type="button" onclick="openSlicePrompt()">复制提示词生成</button>
-        </div>
-        <p class="hint">提示词方式：将提示词和教材交给外部 AI，再将生成的正文导回切片骨架。</p>
-      </div>
     </div>
 
     <div class="drawer-pane" id="paneRules" data-page-node-id="paneRules">
@@ -3194,7 +3184,6 @@
 
   // ===== 左侧面板：知识图谱框选 / 素材与导入规则 / 导出 =====
   const LEFT_PANES = {
-    generation: { pane: 'paneGeneration', title: '提示词生成' },
     graph:  { pane: 'paneGraph',  title: '框选本章行' },
     rules:  { pane: 'paneRules',  title: '素材与导入规则' },
     export: { pane: 'paneExport', title: '导出' }
@@ -3222,10 +3211,6 @@
     document.getElementById('leftDrawer').classList.remove('on');
     document.getElementById('leftMask').classList.remove('on');
     if (!document.getElementById('promptDrawer').classList.contains('on')) document.body.style.overflow = '';
-  }
-  function openSlicePrompt() {
-    promptDirty = false;
-    openDrawer();
   }
 
   function regenPrompt() { promptDirty = false; refreshPrompt(true); setPromptTip(''); }
