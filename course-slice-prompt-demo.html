@@ -1600,6 +1600,27 @@
   function prepareWordContent(html) {
     const container = document.createElement('template');
     container.innerHTML = wordCodeParagraphs(html || '<p></p>');
+    container.content.querySelectorAll('.formula-ph').forEach(span => {
+      const text = span.textContent.trim();
+      // Typing or pasting at a formula boundary can extend its span over
+      // later editor lines and even over pasted images or tables.
+      if (span.querySelector('div, p, img, table, ul, ol, pre, .cap-line, .formula-ph') ||
+          /【(?:图片|表格)(?:标题|描述)】/.test(text)) {
+        span.replaceWith(...span.childNodes);
+        return;
+      }
+      const legacy = text.match(/^【公式[：:]([\s\S]+)】$/);
+      if (legacy) {
+        span.textContent = '$' + legacy[1].trim() + '$';
+      } else if (/^\2(?:\s*\2)?$/.test(text)) {
+        span.remove();
+      } else if (/^\$\$(?:(?!\$\$)[\s\S])+\$\$$|^\$[^$\r\n]+\$$/.test(text)) {
+        span.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+        span.textContent = span.textContent;
+      } else {
+        span.replaceWith(...span.childNodes);
+      }
+    });
     // Editable lines can be bare inline nodes inside divs. Give each line
     // an explicit paragraph so Word's writer cannot merge adjacent Plain blocks.
     const block = 'address, article, aside, blockquote, div, dl, figure, h1, h2, h3, h4, h5, h6, hr, ol, p, pre, section, table, ul';
@@ -1624,15 +1645,6 @@
       }
     }
 
-    container.content.querySelectorAll('.formula-ph').forEach(span => {
-      const legacy = span.textContent.trim().match(/^【公式[：:]([\s\S]+)】$/);
-      if (legacy) span.textContent = '$' + legacy[1].trim() + '$';
-      // Formulas pasted into the editor can contain formatting spans and line breaks.
-      else {
-        span.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-        span.textContent = span.textContent;
-      }
-    });
     const captionNodes = document.createTreeWalker(container.content, NodeFilter.SHOW_TEXT);
     const captionText = [];
     while (captionNodes.nextNode()) {
