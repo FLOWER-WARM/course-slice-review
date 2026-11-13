@@ -1557,13 +1557,33 @@
     const d = document.createElement('div');
     d.innerHTML = html;
     Array.from(d.querySelectorAll('pre')).forEach(pre => {
-      const lines = String(pre.textContent).replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
-      if (!lines.length) { pre.remove(); return; }
-      lines.forEach(line => {
-        // 围栏行以正文写入（与模版示例一致），其余代码行用 SourceCode
-        const isFence = /^\s*```/.test(line);
-        pre.parentNode.insertBefore(codeParagraphEl(isFence ? '' : 'SourceCode', line), pre);
-      });
+      let text = '';
+      function readCode(parent) {
+        for (const node of parent.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            text += node.nodeValue;
+          } else if (node.nodeName === 'BR') {
+            text += '\n';
+          } else if (node.nodeType === Node.ELEMENT_NODE) {
+            const block = node.matches('div, p');
+            if (block && text && !text.endsWith('\n')) text += '\n';
+            const start = text.length;
+            readCode(node);
+            if (block && (text.length === start || !text.endsWith('\n'))) text += '\n';
+          }
+        }
+      }
+      readCode(pre);
+      const lines = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n');
+      const fence = lines[0].match(/^\s*(\x60{3,})([^\x60]*)$/);
+      if (fence) {
+        pre.before(codeParagraphEl('', lines.shift()));
+        const closing = lines.at(-1)?.trim();
+        if (closing && /^\x60+$/.test(closing) && closing.length >= fence[1].length) lines.pop();
+      } else {
+        pre.before(codeParagraphEl('', '\x60\x60\x60' + (pre.dataset.lang || 'text')));
+      }
+      for (const line of lines) pre.before(codeParagraphEl('SourceCode', line || '\u00a0'));
       pre.remove();
     });
     return d.innerHTML;
