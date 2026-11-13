@@ -628,13 +628,6 @@
         <button id="missingPromptBtn" class="ghost-btn" type="button" onclick="openMissingPrompt()">生成缺失切片提示词</button>
       </div>
     </section>
-    <section class="card flat slice-progress" aria-label="教材图片回填">
-      <div class="actions">
-        <button class="ghost-btn" type="button" onclick="resolveSliceFigures()">匹配教材原图</button>
-      </div>
-      <p id="figureStatus" class="hint" role="status"></p>
-      <ul id="figureReview" class="clean" hidden></ul>
-    </section>
     <div id="cardList" data-page-node-id="tDbVlx3MLCLVyCNjVSm9bc"></div>
 
     <div class="export-bar" data-page-node-id="ttf9XOGOGEI2FRY9rFvjyt">
@@ -736,6 +729,8 @@
         <p class="hint">可分批添加多本 PDF、DOCX、TXT、Markdown。PDF 需有可提取的文字，扫描件请先做 OCR。DOCX 与文字版 PDF 的带编号插图会自动提取；未匹配的 PDF 插图可在下方补选。</p>
         <ul class="clean" id="textbookList" hidden></ul>
         <p id="textbookStatus" class="hint" role="status"></p>
+        <p id="figureStatus" class="hint" role="status" hidden></p>
+        <ul id="figureReview" class="clean" hidden></ul>
         <details id="pdfFigureControls" hidden>
           <summary>从 PDF 页面框选原图</summary>
           <div class="textbook-fields">
@@ -3684,9 +3679,9 @@
       });
     });
     list.hidden = !list.children.length;
-    document.getElementById('figureStatus').textContent = list.children.length
-      ? '待确认原图 ' + list.children.length + ' 处'
-      : '导入教材后，可按正文里的独立图号匹配原图。';
+    const status = document.getElementById('figureStatus');
+    status.hidden = list.hidden;
+    status.textContent = list.hidden ? '' : '待确认原图 ' + list.children.length + ' 处';
   }
 
   const pdfCanvas = document.getElementById('pdfFigureCanvas');
@@ -3807,9 +3802,9 @@
       const image = await renderPdfFigureRegion(await pdf.getPage(page), region, scale);
       if (!textbooks.includes(book)) return;
       book.figures.push({ number, caption, page, ...image });
-      cropStatus.textContent = '已保存高清插图「' + caption + '」。可在切片页点击「匹配教材原图」。';
+      cropStatus.textContent = '已保存高清插图「' + caption + '」。';
       renderTextbooks();
-      renderFigureReview();
+      resolveSliceFigures();
     } catch (error) {
       cropStatus.textContent = error.message || '高清插图生成失败。';
       cropSave.disabled = displayedPdf !== preview || selection !== region;
