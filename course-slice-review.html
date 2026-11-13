@@ -795,7 +795,7 @@
         <h3 data-page-node-id="exportH3">导出</h3>
         <p class="hint" id="exportMeta" style="margin-top:0" data-page-node-id="exportMeta"></p>
         <ul class="clean" data-page-node-id="exportRuleList">
-          <li data-page-node-id="exportRuleWord"><b>Word（.docx）</b>：按《知识片段模版》的六字段结构输出，保留图片、表格和代码。通过本机服务导出时，行内 <code>$…$</code> 和独立 <code>$$…$$</code> 公式自动转成 Word 可编辑的专业公式。</li>
+          <li data-page-node-id="exportRuleWord"><b>Word（.docx）</b>：按《知识片段模版》的六字段结构输出，保留图片、表格和代码。导出时，行内 <code>$…$</code> 和独立 <code>$$…$$</code> 公式自动转成 Word 可编辑的专业公式。</li>
           <li data-page-node-id="exportRuleMd"><b>Markdown（.md）</b>：每个切片输出 <code># 完整切片标题</code> + 内容正文，末尾空行分隔；图片以 data URI 内嵌（文件会较大），公式按 LaTeX 原样保留（行内 <code>$…$</code>、独立 <code>$$…$$</code>），表格转成 Markdown 表格，代码保留语言围栏。该格式可被本工具的「批量导入内容」再次读取（勾选项开启「含字段」后会多出四行字段信息）。</li>
           <li data-page-node-id="exportRuleName">导出文件名取自右侧页面「导出文件名」输入框，留空则为「切片」；全部切片导出为一个文件，Word 版每片之间分页。</li>
         </ul>
@@ -814,7 +814,6 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" onerror="this.remove()"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" onerror="this.remove()"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js" onerror="this.remove()"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.js" onerror="this.remove()"></script>
 <script>
   // ===== 主题 =====
   const themeBtn = document.getElementById('themeBtn');
@@ -1098,8 +1097,8 @@
                 '</select>' +
                 '<button onclick="insertCodeFromClipboard(' + i + ')">粘贴剪贴板代码</button>' +
                 '<button onclick="insertCodeBlock(' + i + ')">插入代码块</button>' +
-                '<button onclick="insertMathInline(' + i + ')">插入行内公式 $…$</button>' +
-                '<button onclick="insertMathBlock(' + i + ')">插入独立公式 $$…$$</button>' +
+                '<button onmousedown="event.preventDefault()" onclick="insertMathInline(' + i + ')">插入行内公式 $…$</button>' +
+                '<button onmousedown="event.preventDefault()" onclick="insertMathBlock(' + i + ')">插入独立公式 $$…$$</button>' +
                 '<span class="tool-sep"></span>' +
                 '<button onclick="clearContent(' + i + ')">清空内容</button>' +
               '</div>' +
@@ -1309,41 +1308,78 @@
 
   // 公式定界符插入：行内 $…$ / 独立 $$…$$（不再使用【公式：…】占位文字）
   // 插入后把光标停到两个（两组）$ 之间，直接粘 LaTeX 即可
-  function caretInsideLastMath(el, offset) {
-    const nodes = el.querySelectorAll('.formula-ph');
-    const node = nodes[nodes.length - 1];
-    if (!node) return;
-    const tn = node.firstChild;
-    if (!tn || tn.nodeType !== 3) return;
-    const r = document.createRange();
-    r.setStart(tn, Math.min(offset, tn.nodeValue.length));
-    r.collapse(true);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(r);
-  }
+  const formulaCarets = new WeakMap();
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    const editor = range.startContainer.parentElement?.closest('.content-edit') ||
+      (range.startContainer.matches?.('.content-edit') ? range.startContainer : null);
+    if (!editor || !editor.contains(range.endContainer)) return;
+    const caret = range.cloneRange();
+    caret.collapse(false);
+    formulaCarets.set(editor, caret);
+  });
 
-  function insertMathInline(i) {
-    const el = document.getElementById('content' + i);
-    if (!el) return;
-    placeCaretAtEnd(el);
-    insertHtmlAtCursor('<span class="formula-ph">$$</span>');
-    caretInsideLastMath(el, 1);
+  function insertFormulaAtCaret(i, block) {
+    const editor = document.getElementById('content' + i);
+    if (!editor) return;
+    const selection = window.getSelection();
+    const current = selection.rangeCount ? selection.getRangeAt(0) : null;
+    const caret = current && editor.contains(current.startContainer) && editor.contains(current.endContainer)
+      ? current.cloneRange() : formulaCarets.get(editor);
+    if (caret && editor.contains(caret.endContainer)) {
+      editor.focus();
+      caret.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(caret);
+    } else {
+      placeCaretAtEnd(editor);
+    }
+
+    const marker = 'new-formula-' + crypto.randomUUID();
+    const formula = '<span class="formula-ph" id="' + marker + '">' + (block ? '$$$$' : '$$') + '</span>';
+    if (block) {
+      const range = selection.getRangeAt(0);
+      const parent = range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? range.startContainer : range.startContainer.parentElement;
+      const paragraph = parent.closest('p, div, h1, h2, h3, h4, h5, h6');
+      const math = document.createElement('p');
+      math.className = 'math-block';
+      math.innerHTML = formula;
+      if (paragraph && paragraph !== editor && editor.contains(paragraph)) {
+        const rest = range.cloneRange();
+        rest.setEnd(paragraph, paragraph.childNodes.length);
+        const tail = paragraph.cloneNode(false);
+        tail.removeAttribute('id');
+        tail.append(rest.extractContents());
+        paragraph.after(math);
+        if (tail.textContent || tail.querySelector('img, br')) math.after(tail);
+        if (!paragraph.textContent && !paragraph.querySelector('img, br')) paragraph.remove();
+      } else if (parent === editor || parent.matches('td, th, li, blockquote')) {
+        range.insertNode(math);
+      } else {
+        insertHtmlAtCursor('<br>' + formula + '<br>');
+      }
+    } else {
+      insertHtmlAtCursor(formula);
+    }
+    const inserted = document.getElementById(marker);
+    if (!inserted?.firstChild) return;
+    inserted.removeAttribute('id');
+    const next = document.createRange();
+    next.setStart(inserted.firstChild, block ? 2 : 1);
+    next.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(next);
+    formulaCarets.set(editor, next.cloneRange());
     addFmt(i, '公式');
     onContentInput(i);
-    setHint('已插入行内公式 $…$（「格式」补为「' + slices[i].fmt + '」）：把 LaTeX 粘到两个 $ 之间，如 $E=mc^2$。');
+    setHint(block ? '已插入独立公式，请在两组 $ 之间输入 LaTeX。' : '已插入行内公式，请在两个 $ 之间输入 LaTeX。');
   }
 
-  function insertMathBlock(i) {
-    const el = document.getElementById('content' + i);
-    if (!el) return;
-    placeCaretAtEnd(el);
-    insertHtmlAtCursor('<p class="math-block"><span class="formula-ph">$$$$</span></p>');
-    caretInsideLastMath(el, 2);
-    addFmt(i, '公式');
-    onContentInput(i);
-    setHint('已插入独立公式 $$…$$（「格式」补为「' + slices[i].fmt + '」）：把 LaTeX 粘到两组 $ 之间；多行公式可换行书写。');
-  }
+  function insertMathInline(i) { insertFormulaAtCaret(i, false); }
+  function insertMathBlock(i) { insertFormulaAtCaret(i, true); }
 
   // ===== 图片插入（按钮 / 拖拽 / 粘贴共用） =====
   function imageParaHtml(dataUrl, cb) {
@@ -1602,30 +1638,6 @@
       '<h2>内容</h2>' + content;
   }
 
-  function wordShell(body) {
-    return '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
-      'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">' +
-      '<head><meta charset="utf-8"><title>知识切片</title>' +
-      '<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->' +
-      '<style>' +
-      '@page{size:A4;margin:3cm 2.5cm 2.5cm 3cm;}' +
-      'body{font-family:"宋体","SimSun",serif;font-size:12pt;line-height:1.5;color:#000;}' +
-      'h1{font-size:16pt;font-weight:bold;margin:0 0 6pt;}' +
-      'h2{font-size:12pt;font-weight:bold;margin:10pt 0 3pt;}' +
-      'p{margin:0 0 4pt;}' +
-      'table{border-collapse:collapse;width:100%;}' +
-      'td,th{border:1px solid #000;padding:4px 8px;vertical-align:top;}' +
-      'img{height:auto;}' +
-      // 代码正文：与模版 SourceCode 样式定义一致（Cambria 11pt，无底纹无边框）
-      'p.SourceCode{font-family:Cambria,"Cambria Math",serif;font-size:11pt;line-height:1.15;margin:0;}' +
-      'pre{font-family:Cambria,"Cambria Math",serif;font-size:11pt;white-space:pre-wrap;word-break:break-word;}' +
-      'code{font-family:Consolas,"Courier New",monospace;font-size:10.5pt;}' +
-      '.cap-line{color:#555555;}' +
-      '.formula-ph{font-family:Cambria,"Cambria Math",serif;}' +
-      '.img-broken{color:#c47f17;}' +
-      '</style></head><body>' + body + '</body></html>';
-  }
-
   function safeName(s) { return String(s).replace(/[\\\/:*?"<>|]/g, '_'); }
 
   // SourceCode 段落样式定义（复刻模版：Cambria / 11pt，无底纹无边框）
@@ -1634,56 +1646,6 @@
     '<w:style w:type="paragraph" w:styleId="SourceCode"><w:name w:val="SourceCode"/><w:qFormat/>' +
     '<w:rPr><w:rFonts w:ascii="Cambria" w:hAnsi="Cambria" w:eastAsia="Cambria" w:cs="Cambria"/>' +
     '<w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style></w:styles>';
-
-  // html-docx-js 产出的 docx 不含 styles.xml，这里补上 SourceCode 样式定义并登记关系，
-  // 使打开文档后段落样式与样式窗格中确实显示为「SourceCode」
-  async function injectSourceCodeStyle(buf) {
-    if (typeof JSZip === 'undefined') return buf;
-    try {
-      const zip = await JSZip.loadAsync(buf);
-      if (!zip.file('word/styles.xml')) zip.file('word/styles.xml', SOURCECODE_STYLE_XML);
-      const relPath = 'word/_rels/document.xml.rels';
-      if (zip.file(relPath)) {
-        const x = await zip.file(relPath).async('string');
-        if (x.indexOf('styles.xml') < 0) {
-          zip.file(relPath, x.replace('</Relationships>',
-            '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"' +
-            ' Target="styles.xml" Id="stylesRId"/></Relationships>'));
-        }
-      }
-      if (zip.file('[Content_Types].xml')) {
-        const x = await zip.file('[Content_Types].xml').async('string');
-        if (x.indexOf('/word/styles.xml') < 0) {
-          zip.file('[Content_Types].xml', x.replace('</Types>',
-            '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>'));
-        }
-      }
-      return await zip.generateAsync({
-        type: 'blob',
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        compression: 'DEFLATE'
-      });
-    } catch (err) {
-      return buf;   // 注入失败不阻断导出（类名映射仍可让 Word 应用同名样式）
-    }
-  }
-
-  async function exportBlob(html, nameSuffix) {
-    const baseName = safeName(document.getElementById('fileNameInput').value.trim() || '切片');
-    const suffix = nameSuffix ? '-' + safeName(nameSuffix) : '';
-    // 优先用 html-docx-js 产出真正的 .docx；库未加载时退回 Word 兼容 HTML（.doc）
-    if (typeof htmlDocx !== 'undefined' && htmlDocx.asBlob) {
-      try {
-        const blob = htmlDocx.asBlob(html);
-        const raw = blob.arrayBuffer ? await blob.arrayBuffer() : null;
-        const out = raw ? await injectSourceCodeStyle(raw) : blob;
-        download(out, baseName + suffix + '.docx');
-        return 'docx';
-      } catch (err) { /* 落入降级 */ }
-    }
-    download(new Blob(['\ufeff' + html], { type: 'application/msword' }), baseName + suffix + '.doc');
-    return 'doc';
-  }
 
   function prepareWordContent(html) {
     const container = document.createElement('template');
@@ -1697,6 +1659,23 @@
         span.textContent = span.textContent;
       }
     });
+    const captionNodes = document.createTreeWalker(container.content, NodeFilter.SHOW_TEXT);
+    const captionText = [];
+    while (captionNodes.nextNode()) {
+      const node = captionNodes.currentNode;
+      if (node.parentElement?.closest('pre, code, .SourceCode, .formula-ph')) continue;
+      if (/【(?:图片|表格)(?:标题|描述)】/.test(node.nodeValue)) captionText.push(node);
+    }
+    for (const node of captionText) {
+      const parts = node.nodeValue.split(/(?=【(?:图片|表格)(?:标题|描述)】)/);
+      if (parts.length < 2) continue;
+      const fragment = document.createDocumentFragment();
+      parts.forEach((part, index) => {
+        if (index) fragment.append(document.createElement('br'));
+        fragment.append(part);
+      });
+      node.replaceWith(fragment);
+    }
     let count = 0;
     const nodes = document.createTreeWalker(container.content, NodeFilter.SHOW_TEXT);
     while (nodes.nextNode()) {
@@ -1724,6 +1703,44 @@
     return { html: container.innerHTML, count };
   }
 
+  const PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+  let browserWordConverter;
+
+  async function convertBrowserWord(html) {
+    const base = 'https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/';
+    browserWordConverter ??= Promise.all([
+      import(base + 'core.js/+esm'),
+      fetch('https://unpkg.com/pandoc-wasm@1.1.0/src/pandoc.wasm', { signal: AbortSignal.timeout(90000) }).then(response => {
+        if (!response.ok) throw new Error('无法下载公式转换组件');
+        return response.arrayBuffer();
+      })
+    ]).then(([module, wasm]) => module.createPandocInstance(wasm)).catch(() => {
+      browserWordConverter = undefined;
+      throw new Error('公式转换组件加载失败，请检查网络后重试。');
+    });
+    const { convert } = await browserWordConverter;
+    const parsed = await convert({ from: 'html+tex_math_single_backslash', to: 'json' }, html, {});
+    const document = JSON.parse(parsed.stdout);
+    document.blocks = document.blocks.map(block => {
+      if (block.t !== 'Div') return block;
+      const [attributes, contents] = block.c;
+      if (attributes[1].includes('slice-word-page-break')) return { t: 'RawBlock', c: ['openxml', PAGE_BREAK] };
+      if (attributes[2].some(([key, value]) => key === 'custom-style' && value === 'Source Code')) {
+        for (const paragraph of contents) {
+          if (paragraph.t === 'Para') {
+            paragraph.c = paragraph.c.map(item => item.t === 'Code' ? { t: 'Str', c: item.c[1] } : item);
+          }
+        }
+      }
+      return block;
+    });
+    const output = await convert({ from: 'json', to: 'docx', 'output-file': 'slices.docx' },
+      JSON.stringify(document), {});
+    const file = output.files['slices.docx'];
+    if (!file?.arrayBuffer) throw new Error('DOCX output missing');
+    return file;
+  }
+
   let wordExportInProgress = false;
   async function formatNativeWord(zip, xml) {
     const layout = '<w:pgSz w:w="11906" w:h="16838"/>' +
@@ -1746,34 +1763,30 @@
     });
   }
 
+  async function requestNativeWord(body) {
+    const response = await fetch('/api/export-word', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      body
+    });
+    if (!response.ok) {
+      if (response.status === 413) throw new Error('文档内容过大，请分批导出。');
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error?.message || 'Word 导出失败，请稍后重试。');
+    }
+    return response.blob();
+  }
+
   async function exportWordSlices(selected, nameSuffix) {
     if (wordExportInProgress) return;
     const prepared = selected.map(slice => prepareWordContent(slice.content));
     const formulaCount = prepared.reduce((sum, item) => sum + item.count, 0);
-    if (!formulaCount || !serverMode) {
-      if (formulaCount && !confirm('当前直接打开了 HTML。通过本机服务导出可生成 Word 专业公式。是否继续导出 LaTeX 文本版？')) return;
-      const body = selected.map(slice => sliceWordHtml(slice)).join('<p style="page-break-before:always"></p>');
-      const kind = await exportBlob(wordShell(body), nameSuffix);
-      setHint('已导出 Word（.' + kind + '）。');
-      return;
-    }
-
     wordExportInProgress = true;
-    setHint('正在导出 Word 专业公式…');
+    setHint('正在导出 Word…');
     try {
       const body = selected.map((slice, i) => sliceWordHtml(slice, prepared[i].html))
         .join('<div class="slice-word-page-break"><p>分页</p></div>');
-      const response = await fetch('/api/export-word', {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        body
-      });
-      if (!response.ok) {
-        if (response.status === 413) throw new Error('文档内容过大，请分批导出。');
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error?.message || 'Word 导出失败，请稍后重试。');
-      }
-      const blob = await response.blob();
+      const blob = serverMode ? await requestNativeWord(body) : await convertBrowserWord(body);
       const zip = await JSZip.loadAsync(blob);
       const xml = await zip.file('word/document.xml').async('string');
       const converted = (xml.match(/<m:oMath(?:\s|>)/g) || []).length;
@@ -2823,7 +2836,7 @@
       (report.blockWithoutContent.length ? '　<span class="bad">空内容 ' + report.blockWithoutContent.length + ' 个</span>' : '') + '</div>';
     if (math && math.formulas && math.formulas.length) {
       h += '<div><b>识别到 ' + math.formulas.length + ' 处 Word 公式</b>：' +
-        '<span style="font-size:12px;color:var(--text2)">公式已按原位置写入「内容」。通过本机服务导出 Word 时会自动转换为专业公式。</span>' +
+        '<span style="font-size:12px;color:var(--text2)">公式已按原位置写入「内容」。导出 Word 时自动转换为专业公式。</span>' +
         '<ul>' + math.formulas.map((l, i) => '<li>公式 ' + (i + 1) + '：<code>' + esc(l || '（未提取到文本）') + '</code></li>').join('') + '</ul></div>';
     } else if (math && math.supported && math.oleCount) {
       h += '<div class="bad">文档里有 ' + math.oleCount + ' 个 OLE 嵌入对象（常见于 MathType 公式），这类公式不是 Word 原生公式，无法自动提取文本，需在 Word 中手工重建。</div>';

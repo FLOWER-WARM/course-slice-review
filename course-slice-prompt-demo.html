@@ -765,7 +765,6 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" onerror="this.remove()"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" onerror="this.remove()"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js" onerror="this.remove()"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.js" onerror="this.remove()"></script>
 <script>
   // ===== 主题 =====
   const themeBtn = document.getElementById('themeBtn');
@@ -1589,30 +1588,6 @@
       '<h2>内容</h2>' + content;
   }
 
-  function wordShell(body) {
-    return '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
-      'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">' +
-      '<head><meta charset="utf-8"><title>知识切片</title>' +
-      '<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->' +
-      '<style>' +
-      '@page{size:A4;margin:3cm 2.5cm 2.5cm 3cm;}' +
-      'body{font-family:"宋体","SimSun",serif;font-size:12pt;line-height:1.5;color:#000;}' +
-      'h1{font-size:16pt;font-weight:bold;margin:0 0 6pt;}' +
-      'h2{font-size:12pt;font-weight:bold;margin:10pt 0 3pt;}' +
-      'p{margin:0 0 4pt;}' +
-      'table{border-collapse:collapse;width:100%;}' +
-      'td,th{border:1px solid #000;padding:4px 8px;vertical-align:top;}' +
-      'img{height:auto;}' +
-      // 代码正文：与模版 SourceCode 样式定义一致（Cambria 11pt，无底纹无边框）
-      'p.SourceCode{font-family:Cambria,"Cambria Math",serif;font-size:11pt;line-height:1.15;margin:0;}' +
-      'pre{font-family:Cambria,"Cambria Math",serif;font-size:11pt;white-space:pre-wrap;word-break:break-word;}' +
-      'code{font-family:Consolas,"Courier New",monospace;font-size:10.5pt;}' +
-      '.cap-line{color:#555555;}' +
-      '.formula-ph{font-family:Cambria,"Cambria Math",serif;}' +
-      '.img-broken{color:#c47f17;}' +
-      '</style></head><body>' + body + '</body></html>';
-  }
-
   function safeName(s) { return String(s).replace(/[\\\/:*?"<>|]/g, '_'); }
 
   // SourceCode 段落样式定义（复刻模版：Cambria / 11pt，无底纹无边框）
@@ -1621,56 +1596,6 @@
     '<w:style w:type="paragraph" w:styleId="SourceCode"><w:name w:val="SourceCode"/><w:qFormat/>' +
     '<w:rPr><w:rFonts w:ascii="Cambria" w:hAnsi="Cambria" w:eastAsia="Cambria" w:cs="Cambria"/>' +
     '<w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style></w:styles>';
-
-  // html-docx-js 产出的 docx 不含 styles.xml，这里补上 SourceCode 样式定义并登记关系，
-  // 使打开文档后段落样式与样式窗格中确实显示为「SourceCode」
-  async function injectSourceCodeStyle(buf) {
-    if (typeof JSZip === 'undefined') return buf;
-    try {
-      const zip = await JSZip.loadAsync(buf);
-      if (!zip.file('word/styles.xml')) zip.file('word/styles.xml', SOURCECODE_STYLE_XML);
-      const relPath = 'word/_rels/document.xml.rels';
-      if (zip.file(relPath)) {
-        const x = await zip.file(relPath).async('string');
-        if (x.indexOf('styles.xml') < 0) {
-          zip.file(relPath, x.replace('</Relationships>',
-            '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"' +
-            ' Target="styles.xml" Id="stylesRId"/></Relationships>'));
-        }
-      }
-      if (zip.file('[Content_Types].xml')) {
-        const x = await zip.file('[Content_Types].xml').async('string');
-        if (x.indexOf('/word/styles.xml') < 0) {
-          zip.file('[Content_Types].xml', x.replace('</Types>',
-            '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>'));
-        }
-      }
-      return await zip.generateAsync({
-        type: 'blob',
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        compression: 'DEFLATE'
-      });
-    } catch (err) {
-      return buf;   // 注入失败不阻断导出（类名映射仍可让 Word 应用同名样式）
-    }
-  }
-
-  async function exportBlob(html, nameSuffix) {
-    const baseName = safeName(document.getElementById('fileNameInput').value.trim() || '切片');
-    const suffix = nameSuffix ? '-' + safeName(nameSuffix) : '';
-    // 优先用 html-docx-js 产出真正的 .docx；库未加载时退回 Word 兼容 HTML（.doc）
-    if (typeof htmlDocx !== 'undefined' && htmlDocx.asBlob) {
-      try {
-        const blob = htmlDocx.asBlob(html);
-        const raw = blob.arrayBuffer ? await blob.arrayBuffer() : null;
-        const out = raw ? await injectSourceCodeStyle(raw) : blob;
-        download(out, baseName + suffix + '.docx');
-        return 'docx';
-      } catch (err) { /* 落入降级 */ }
-    }
-    download(new Blob(['\ufeff' + html], { type: 'application/msword' }), baseName + suffix + '.doc');
-    return 'doc';
-  }
 
   function prepareWordContent(html) {
     const container = document.createElement('template');
@@ -1684,6 +1609,23 @@
         span.textContent = span.textContent;
       }
     });
+    const captionNodes = document.createTreeWalker(container.content, NodeFilter.SHOW_TEXT);
+    const captionText = [];
+    while (captionNodes.nextNode()) {
+      const node = captionNodes.currentNode;
+      if (node.parentElement?.closest('pre, code, .SourceCode, .formula-ph')) continue;
+      if (/【(?:图片|表格)(?:标题|描述)】/.test(node.nodeValue)) captionText.push(node);
+    }
+    for (const node of captionText) {
+      const parts = node.nodeValue.split(/(?=【(?:图片|表格)(?:标题|描述)】)/);
+      if (parts.length < 2) continue;
+      const fragment = document.createDocumentFragment();
+      parts.forEach((part, index) => {
+        if (index) fragment.append(document.createElement('br'));
+        fragment.append(part);
+      });
+      node.replaceWith(fragment);
+    }
     let count = 0;
     const nodes = document.createTreeWalker(container.content, NodeFilter.SHOW_TEXT);
     while (nodes.nextNode()) {
@@ -1712,22 +1654,21 @@
   }
 
   const PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
-  let demoWordConverter;
-  let wordExportInProgress = false;
+  let browserWordConverter;
 
-  async function convertDemoWord(html) {
+  async function convertBrowserWord(html) {
     const base = 'https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/';
-    demoWordConverter ??= Promise.all([
+    browserWordConverter ??= Promise.all([
       import(base + 'core.js/+esm'),
       fetch('https://unpkg.com/pandoc-wasm@1.1.0/src/pandoc.wasm', { signal: AbortSignal.timeout(90000) }).then(response => {
         if (!response.ok) throw new Error('无法下载公式转换组件');
         return response.arrayBuffer();
       })
     ]).then(([module, wasm]) => module.createPandocInstance(wasm)).catch(() => {
-      demoWordConverter = undefined;
+      browserWordConverter = undefined;
       throw new Error('公式转换组件加载失败，请检查网络后重试。');
     });
-    const { convert } = await demoWordConverter;
+    const { convert } = await browserWordConverter;
     const parsed = await convert({ from: 'html+tex_math_single_backslash', to: 'json' }, html, {});
     const document = JSON.parse(parsed.stdout);
     document.blocks = document.blocks.map(block => {
@@ -1749,6 +1690,8 @@
     if (!file?.arrayBuffer) throw new Error('DOCX output missing');
     return file;
   }
+
+  let wordExportInProgress = false;
 
   async function formatNativeWord(zip, xml) {
     const layout = '<w:pgSz w:w="11906" w:h="16838"/>' +
@@ -1775,19 +1718,12 @@
     if (wordExportInProgress) return;
     const prepared = selected.map(slice => prepareWordContent(slice.content));
     const formulaCount = prepared.reduce((sum, item) => sum + item.count, 0);
-    if (!formulaCount) {
-      const body = selected.map(slice => sliceWordHtml(slice)).join('<p style="page-break-before:always"></p>');
-      const kind = await exportBlob(wordShell(body), nameSuffix);
-      setHint('已导出 Word（.' + kind + '）。');
-      return;
-    }
-
     wordExportInProgress = true;
-    setHint('正在导出 Word 专业公式…');
+    setHint('正在导出 Word…');
     try {
       const body = selected.map((slice, i) => sliceWordHtml(slice, prepared[i].html))
         .join('<div class="slice-word-page-break"><p>分页</p></div>');
-      const blob = await convertDemoWord(body);
+      const blob = await convertBrowserWord(body);
       const zip = await JSZip.loadAsync(blob);
       const xml = await zip.file('word/document.xml').async('string');
       const converted = (xml.match(/<m:oMath(?:\s|>)/g) || []).length;
