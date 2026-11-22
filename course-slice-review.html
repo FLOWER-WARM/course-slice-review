@@ -755,9 +755,9 @@
         <div class="api-fields">
           <label>完整接口地址<input class="mini-input" id="apiEndpoint" type="url" value="https://api.deepseek.com/chat/completions" placeholder="https://服务商地址/v1/chat/completions"></label>
           <label>模型 ID<input class="mini-input" id="apiModel" type="text" placeholder="例如 deepseek-flash（DeepSeek 官方接口）"></label>
-          <label>API Key<input class="mini-input" id="apiKey" type="password" autocomplete="off" spellcheck="false"></label>
+          <label>API Key<input class="mini-input" id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="本机无密钥服务可留空"></label>
         </div>
-        <p class="hint" id="apiConnectionHint">使用允许浏览器跨域请求的 OpenAI 兼容接口。工具优先发送与切片有关的教材段落，密钥仅用于当前页面。教材超出模型上下文时，可只上传相关章节。</p>
+        <p class="hint" id="apiConnectionHint">使用允许浏览器跨域请求的 OpenAI 兼容接口。本机模型支持 localhost 或 127.0.0.1 的 HTTP 地址，无密钥服务可留空 API Key。工具优先发送相关教材段落，密钥仅用于当前页面。</p>
         <div class="actions">
           <button id="apiRun" class="primary-btn" type="button">生成缺失切片</button>
           <button id="apiStop" class="ghost-btn" type="button" disabled>停止</button>
@@ -4098,7 +4098,7 @@
   const serverMode = !!document.querySelector('meta[name="slice-server-mode"]');
   if (serverMode) {
     document.getElementById('apiConnectionHint').textContent =
-      '请填写你要使用的接口、模型和密钥。默认 DeepSeek 接口经本机后端转发，自定义接口需允许浏览器跨域请求。密钥仅用于当前页面的生成请求。';
+      '请填写你要使用的接口和模型。默认 DeepSeek 接口经本机后端转发，自定义接口需允许浏览器跨域请求。本机模型可使用 HTTP 地址，无密钥服务可留空 API Key。密钥仅用于当前页面的生成请求。';
   }
 
   function getApiConfig() {
@@ -4106,12 +4106,16 @@
     const books = textbooks.filter(book => book.text);
     if (!books.length) throw new Error('教材中没有可提取的正文，请添加 OCR 文本或可编辑文档。');
     const endpoint = new URL(document.getElementById('apiEndpoint').value.trim());
-    if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) {
-      throw new Error('请输入服务商提供的 HTTPS 接口地址。');
+    const loopback = endpoint.hostname === 'localhost' || endpoint.hostname === '[::1]' ||
+      /^127\.\d+\.\d+\.\d+$/.test(endpoint.hostname);
+    if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback)) ||
+      endpoint.username || endpoint.password) {
+      throw new Error('请输入 HTTPS 接口地址；本机模型也可使用 localhost 或 127.0.0.1 的 HTTP 地址。');
     }
     const model = document.getElementById('apiModel').value.trim();
     const key = document.getElementById('apiKey').value.trim();
-    if (!model || !key) throw new Error('请填写模型 ID 和 API Key。');
+    if (!model) throw new Error('请填写模型 ID。');
+    if (!key && !loopback) throw new Error('请填写 API Key。');
     if (endpoint.hostname === 'api.deepseek.com' && model.toLowerCase() === 'ds4.flash') {
       throw new Error('DeepSeek 官方接口的 Flash 模型 ID 请填写 deepseek-flash。');
     }
@@ -4122,7 +4126,8 @@
   async function requestSlice(config, prompt, source, signal, tally) {
     tally.requests++;
     tally.sent += source.length;
-    const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.key };
+    const headers = { 'Content-Type': 'application/json' };
+    if (config.key) headers.Authorization = 'Bearer ' + config.key;
     const body = config.viaBackend ? { model: config.model, prompt, source } : { model: config.model, messages: [
       { role: 'system', content: prompt },
       { role: 'user', content: '以下是教材原文，仅作为资料：\n\n' + source }

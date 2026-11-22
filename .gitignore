@@ -3,3 +3,4 @@
 !.env.example
 node_modules/
 local-model/
+__pycache__/
