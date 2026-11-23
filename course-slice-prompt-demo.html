@@ -1745,6 +1745,17 @@
     const borders = '<w:tblBorders>' +
       ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(side =>
         '<w:' + side + ' w:val="single" w:sz="4" w:color="000000"/>').join('') + '</w:tblBorders>';
+    // Word localizes its built-in Normal style as 正文. Pandoc's FirstParagraph,
+    // BodyText and Compact are ordinary paragraphs, not the requested body style.
+    // Keep headings and explicit code/caption styles intact.
+    xml = xml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, paragraph => {
+      if (/<w:pStyle\b/.test(paragraph)) {
+        return paragraph.replace(/(<w:pStyle\b[^>]*w:val=")(?:FirstParagraph|BodyText|Compact)(")/g, '$1Normal$2');
+      }
+      if (/<w:pPr\b[^>]*\/>/.test(paragraph)) return paragraph.replace(/<w:pPr\b[^>]*\/>/, '<w:pPr><w:pStyle w:val="Normal"/></w:pPr>');
+      if (/<w:pPr\b/.test(paragraph)) return paragraph.replace(/<w:pPr([^>]*)>/, '<w:pPr$1><w:pStyle w:val="Normal"/>');
+      return paragraph.replace(/(<w:p(?:\s[^>]*)?>)/, '$1<w:pPr><w:pStyle w:val="Normal"/></w:pPr>');
+    });
     const formatted = xml.replace(/<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>/g, section =>
       section.replace(/<w:pg(?:Sz|Mar)\b[^>]*\/>/g, '').replace('</w:sectPr>', layout + '</w:sectPr>'));
     zip.file('word/document.xml', formatted.replace(/<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>/g, properties =>
