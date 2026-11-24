@@ -8,13 +8,14 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from transformers import AutoTokenizer, AutoConfig, BitsAndBytesConfig, Qwen3_5ForCausalLM
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 import argparse
 parser = argparse.ArgumentParser(description='Local Qwen3.5 text QLoRA training with held-out validation')
 parser.add_argument('--dataset-dir', required=True, type=Path)
 parser.add_argument('--base-model-dir', required=True, type=Path)
 parser.add_argument('--epochs', type=int, default=2)
+parser.add_argument('--initial-adapter', type=Path, help='Continue supervised training from an existing local PEFT adapter')
 parser.add_argument('--probe-ids', default='')
 parser.add_argument('--probe-max-tokens',type=int,default=512)
 parser.add_argument('--probe-max-seconds',type=float,default=120)
@@ -77,7 +78,10 @@ if load_info.get('missing_keys') or load_info.get('unexpected_keys') or load_inf
     raise RuntimeError('Base weights did not map exactly: '+str(load_info))
 model.config.use_cache = False
 model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant':False})
-model = get_peft_model(model, LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, target_modules=['q_proj','v_proj','in_proj_qkv','out_proj'], task_type='CAUSAL_LM', bias='none'))
+if args.initial_adapter:
+    model = PeftModel.from_pretrained(model, str(args.initial_adapter.resolve()), is_trainable=True)
+else:
+    model = get_peft_model(model, LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, target_modules=['q_proj','v_proj','in_proj_qkv','out_proj'], task_type='CAUSAL_LM', bias='none'))
 model.print_trainable_parameters()
 base_model = model.get_base_model()
 base_model.model.embed_tokens.to(torch.bfloat16)
@@ -143,7 +147,7 @@ for epoch in range(args.epochs):
         best=metrics['mean_nll'];best_epoch=epoch+1;model.save_pretrained(OUT,safe_serialization=True);tok.save_pretrained(OUT)
 
 changed={n:float((p.detach().cpu()-initial[n]).abs().max()) for n,p in model.named_parameters() if n in initial}
-report={'base':'Qwen/Qwen3.5-4B','method':'NF4 QLoRA supervised fine-tuning','train_nodes':len(train),'validation_nodes':len(valid),'epochs':args.epochs,'optimizer_steps':step,'baseline_nll':baseline['mean_nll'],'best_validation_nll':best,'best_epoch':best_epoch,'changed_tensors':sum(v>0 for v in changed.values()),'max_weight_delta':max(changed.values()),'history':history,'note':'Single-course assistant-reviewed pilot; NLL improvement is not proof of factual correctness or cross-course generalization.'}
+report={'base':'Qwen/Qwen3.5-4B','method':'NF4 QLoRA continuation' if args.initial_adapter else 'NF4 QLoRA supervised fine-tuning','train_nodes':len(train),'validation_nodes':len(valid),'epochs':args.epochs,'optimizer_steps':step,'baseline_nll':baseline['mean_nll'],'best_validation_nll':best,'best_epoch':best_epoch,'changed_tensors':sum(v>0 for v in changed.values()),'max_weight_delta':max(changed.values()),'history':history,'note':'Assistant-reviewed validation; NLL improvement is not proof of factual correctness or cross-course generalization.'}
 (ROOT/'training-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 model.load_adapter(OUT,adapter_name='selected')
 model.set_adapter('selected')

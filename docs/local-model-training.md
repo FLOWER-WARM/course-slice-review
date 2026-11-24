@@ -27,16 +27,20 @@ local-model/train-env/Scripts/python.exe scripts/prepare-qwen35-text.py --source
 数据目录中准备 `train.jsonl`、`validation.jsonl`，每行结构如下，内容替换为本地已审核材料：
 
 ```json
-{"id":"node-id","path":["课程","章节","知识点"],"source_pages":[1],"messages":[{"role":"system","content":"仅依据教材生成切片正文。"},{"role":"user","content":"完整知识路径：课程 / 章节 / 知识点\n教材候选原文：\n[教材原文]"},{"role":"assistant","content":"[审核后的正文]"}]}
+{"id":"node-id","path":["课程","章节","知识点"],"source_pages":[1],"messages":[{"role":"system","content":"仅依据教材生成切片正文。正文语言与对应教材段落一致，标题及知识路径可用其他语言。"},{"role":"user","content":"完整知识路径：课程 / 章节 / 知识点\n教材候选原文：\n[教材原文]"},{"role":"assistant","content":"[审核后的正文]"}]}
 ```
 
 按章节或教材页隔离训练和验证数据，排除重复节点、空答案和对应关系尚不清楚的样本。错误初稿可另外保存为纠错记录，本脚本只对审核后的正文计算监督损失，不执行 DPO 或强化学习。助手审核样本仍需学科人员复核。
+
+训练样本中的【内容】语言按教材正文决定。英文原文配英文答案，中文原文配中文答案，中英混排按对应段落保留原语言。标题与知识路径可使用不同语言。验证应包含教材与标题语言不同的输入，逐条核对正文语言、公式、定理条件和原书例子。
 
 ## 训练和检查
 
 ```powershell
 local-model/train-env/Scripts/python.exe scripts/train-local-slicer.py --dataset-dir local-model/training-run --base-model-dir local-model/train-base/Qwen3.5-4B-text --epochs 2
 ```
+
+继续训练已有 LoRA 时传入 `--initial-adapter <已有适配器目录>`，并为新一轮设置独立的 `--dataset-dir`，避免覆盖上一轮结果。
 
 可用 `--probe-ids id1,id2` 指定对照节点，保存训练前后的实际生成结果，并标注它们属于训练集还是验证集。`--probe-max-tokens` 和 `--probe-max-seconds` 控制检查的长度和时限；标为截断的结果不能作为完整切片验收。脚本先测基线，再逐轮训练和验证，分别保存每轮适配器，并按验证损失选择输出到 `adapter/`。`training-report.json` 记录验证损失、优化步数和权重变化。
 
