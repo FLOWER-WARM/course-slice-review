@@ -4061,7 +4061,23 @@
       return '【' + (book.sourceType === 'pptx' ? '课件' : '教材') + '：' + book.name + '】\n' + text;
     }).join('\n\n');
     const figures = allTextbookFigures().filter(figure => numbersByBook.get(figure.id.split('-')[0])?.has(figure.number));
-    return { source, figures };
+    return { source, figures, language: textbookProseLanguage(sections.map(section => section.text).join('\n\n')) };
+  }
+
+  function stripProseMarkup(value) {
+    return value.replace(/^[ \t]*[\x60~]{3,}[\s\S]*?^[ \t]*[\x60~]{3,}[^\n]*$/gm, ' ')
+      .replace(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\[\[FIG:[^\]]+\]\]/g, ' ');
+  }
+
+  function textbookProseLanguage(value) {
+    const prose = stripProseMarkup(value).replace(/^【(?:教材|课件|备注|第[^】]+)[^】]*】\s*$/gm, '');
+    if (/[\u3040-\u30ff\uac00-\ud7af]/u.test(prose)) return '';
+    const han = (prose.match(/\p{Script=Han}/gu) || []).length;
+    const words = prose.match(/\b[A-Za-z]{2,}\b/g) || [];
+    const englishMarkers = new Set((prose.toLowerCase().match(/\b(?:the|is|are|of|and|if|with|this|that|such|for|in)\b/g) || []));
+    if (!han && words.length >= 20 && englishMarkers.size >= 4) return 'en';
+    if (han >= 30 && words.length <= 8 && /的|是|在|与|为/.test(prose)) return 'zh';
+    return '';
   }
 
   function selectSliceMaterials(books, slice) {
@@ -4316,10 +4332,19 @@
     }
     const content = document.createElement('template');
     content.innerHTML = block.parts.join('');
-    if (/^教材本节未涉及[。！!]?\s*$/.test(content.content.textContent.trim())) {
+    if (/^(?:教材本节未涉及[。！!]?|This section is not covered by the source\.?)[\s]*$/i.test(content.content.textContent.trim())) {
       throw new Error('模型判断所选段落未覆盖该切片。可添加对应正文页后重试。');
     }
     return block;
+  }
+
+  function apiBodyLanguageMismatch(block, language) {
+    const content = document.createElement('template');
+    content.innerHTML = block.parts.join('');
+    content.content.querySelectorAll('pre, code, .formula-ph').forEach(node => node.remove());
+    const prose = stripProseMarkup(content.content.textContent);
+    if (language === 'en') return /\p{Script=Han}/u.test(prose);
+    return textbookProseLanguage(prose) === 'en';
   }
 
   async function generateMissingWithApi() {
@@ -4353,7 +4378,7 @@
         apiStatus.textContent = '正在生成 ' + (index + 1) + ' / ' + jobs.length + ' · ' + job.title;
         try {
           const prompt = buildPromptText({ ...ctx, list: [job.title], '分类': job.slice.cat, '来源': job.slice.src || ctx['来源'] });
-          const { source, figures } = selectSliceMaterials(config.books, job.slice);
+          const { source, figures, language } = selectSliceMaterials(config.books, job.slice);
           const figureList = figures.map(figure => figure.id + ' ' + figure.caption).join('\n');
           const figureRule = figureList
             ? '\n\n以下是可用教材原图索引。教材原文和本切片涉及同一图时，请将图放在相关知识点后，用独立一行 [[FIG:图片ID]] 代替该处独立的教材图号行，然后写图题和图述。只使用清单中的 ID；同图号对应多本教材且无法判定时，保留独立教材图号行。\n' + figureList
@@ -4362,8 +4387,17 @@
           const sourceRule = config.books.some(book => book.sourceType === 'pptx')
             ? '\n\n课件处理要求：资料可能来自老师的PPTX及备注，不是完整教材。依据当前知识点的完整路径综合相关页，只生成当前切片，首行标题只出现一次，禁止每页重复标题。逐页标记和备注标签是来源定位，不输出到正文；教师的课堂调度要求不是让你实际执行任务。保留✓可做与✗不可做、否定和限定条件，不能把不可做写成可做。先提炼本节主要知识框架再核对遗漏，兼顾备注中的修正。模拟数据、构造案例和流程示意须明确标注，不能当真实实测；实操节点写任务、步骤和验收，不虚构已完成的实验、检索、论文接收或效率提升。无法从文字核实的图像内容标待核，不补造。'
             : '';
-          const output = await requestSlice(config, prompt + figureRule + sourceRule, source, controller.signal, tally);
-          const block = validateApiSlice(output, job.title);
+          const languageRule = language === 'en'
+            ? '\n\nThe supplied textbook prose is English. Write the entire slice body in English, even if the required heading is Chinese. Copy the required heading exactly. If the material does not cover the topic, write “This section is not covered by the source.” as the body.'
+            : language === 'zh' ? '\n\n本次选中的教材正文为中文。标题原样保留，【内容】用中文撰写。' : '';
+          const systemPrompt = prompt + figureRule + sourceRule + languageRule;
+          let output = await requestSlice(config, systemPrompt, source, controller.signal, tally);
+          let block = validateApiSlice(output, job.title);
+          if (language && apiBodyLanguageMismatch(block, language)) {
+            output = await requestSlice(config, systemPrompt + '\n\nRewrite the body in the language of the supplied prose. Do not translate the required heading.', source, controller.signal, tally);
+            block = validateApiSlice(output, job.title);
+            if (apiBodyLanguageMismatch(block, language)) throw new Error('生成正文的语言与教材不一致，未回填。');
+          }
           matches.push({ i: job.i, slice: job.slice, block, figures, docTitle: block.title, sliceTitle: job.title });
         } catch (error) {
           if (controller.signal.aborted) break;
