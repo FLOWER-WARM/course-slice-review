@@ -8,9 +8,9 @@
 | 项 | 状态 |
 | --- | --- |
 | 远端仓库 | `https://github.com/FLOWER-WARM/course-slice-review`（公开，默认分支 `main`） |
-| 远端最新提交 | `e88902d` *Retry slice generation when body language conflicts with source*（2026-11-24 21:25 +08:00） |
+| 远端最新提交 | 以 `git ls-remote origin main` 为准；本次交接提交为 `827ffd6`，上一次功能提交 `e88902d` *Retry slice generation when body language conflicts with source*（2026-11-24 21:25 +08:00） |
 | 本地工作区 | `E:\雨课堂\切片生成`，**根目录即 git 仓库**，`origin` 指向上面这个远端 |
-| 本地基线 | 工作树 = `e88902d`；`git status` 应为干净 |
+| 本地基线 | 工作树 = 远端 `main`（含本次文档提交）；`git status` 应为干净 |
 | 未提交改动 | 无 |
 | 本地数据 | `local-model/`（教材、训练样本、LoRA 权重、Ollama、llama.cpp、同步 clone），约 30 GB，全部不入库 |
 
@@ -101,7 +101,7 @@ git push origin main
 
 - **shell 只能写仓库根目录**：`docs/`、`scripts/` 等子目录会被拒绝（目录仍是「中」完整性级别，沙箱进程是「低」级别）。所以：改文件用 `write`/`edit` 工具；`git checkout -- 子目录文件`、`git stash`、`git merge` 这类会重写工作树的命令可能失败。
 - **git 网络操作需要完全权限**：沙箱内 `git ls-remote/fetch/push` 会报 `schannel: AcquireCredentialsHandle failed`。推送前请用户放开一次权限，或让用户在宿主终端推送。
-- 回归脚本 spawn headless Edge，产物写 `local-model/`，同理需要权限。
+- 回归脚本 spawn headless Edge，产物写 `local-model/`，同理需要权限；且在受限沙箱里 Edge 取不到 CDN，脚本会以 `Runtime.evaluate timed out` 失败（2026-11-25 实测）。这类验证请让用户在宿主机上跑，或在回复里说明「只能做静态检查」。
 
 ## 五、待办候选（按价值排序）
 
@@ -117,4 +117,4 @@ git push origin main
 
 | 日期 | 执行者 | 改动范围 | 验证 | 提交 |
 | --- | --- | --- | --- | --- |
-| 2026-11-25 | DSH（接管） | 修复工作区权限；根目录接入 git（HEAD `e88902d`）；新增 `docs/workspace-map.md`、`docs/agent-handoff.md`；扩充 `AGENTS.md` | `git status` 干净；服务冒烟 GET 200 / POST 401；`node --check` 两个 `.mjs` | 见本文件所在提交 |
+| 2026-11-25 | DSH（接管） | 修复工作区权限；根目录接入 git（起点 `e88902d`）；新增 `docs/workspace-map.md`、`docs/agent-handoff.md`；扩充 `AGENTS.md` | `git status` 干净；服务冒烟 GET 200 / POST 401；`node --check` 两个 `.mjs`；推送后 `git ls-remote` 与本地一致 | `827ffd6` |

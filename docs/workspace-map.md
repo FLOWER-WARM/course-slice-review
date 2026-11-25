@@ -159,6 +159,8 @@ node scripts/test-word-body-style.mjs                   # Word 样式/Normal/页
 
 脚本用 headless Edge + CDP 驱动真实页面，产物写到 `local-model/style-regression/`（不入库）。
 
+> 2026-11-25 实测：在受限沙箱里这两个脚本会在 `Runtime.evaluate` 超时，原因是页面要从 jsdelivr/unpkg 加载 xlsx、jszip、mammoth、pandoc.wasm，而沙箱内 Edge 没有可用网络。请在宿主机或完全权限下运行。
+
 ## 已知问题与风险
 
 1. **单文件体量**：主页面 4871 行；两份页面重复约 3000 行，改动容易漏同步。
