@@ -159,7 +159,7 @@ node scripts/test-word-body-style.mjs                   # Word 样式/Normal/页
 
 脚本用 headless Edge + CDP 驱动真实页面，产物写到 `local-model/style-regression/`（不入库）。
 
-> 2026-11-25 实测：在受限沙箱里这两个脚本会在 `Runtime.evaluate` 超时，原因是页面要从 jsdelivr/unpkg 加载 xlsx、jszip、mammoth、pandoc.wasm，而沙箱内 Edge 没有可用网络。请在宿主机或完全权限下运行。
+2026-11-25 实测（完全权限）：`test-pptx-source.mjs` 11 项检查通过，`test-word-body-style.mjs` 输出 `{"label":"full","passed":true,"paragraphs":17,"math":true}`。受限沙箱里会因 Edge 取不到 CDN 而 `Runtime.evaluate timed out`。
 
 ## 已知问题与风险
 
